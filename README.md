@@ -89,7 +89,21 @@ Open `#/signin`, sign in with the admin email — the **🛠 Admin panel** appea
 top-right menu and sidebar automatically. Then press **✨ Create starter content**
 on the admin dashboard to seed example categories, a welcome page and an announcement.
 
-### 5. Publish
+### 5. Publish to GitHub Pages (already set up ✅)
+
+Your repository ships with `.github/workflows/static.yml`, so every push to `main`
+automatically publishes the site to **GitHub Pages**:
+
+1. Repository **Settings → Pages → Source: GitHub Actions** (pick it once)
+2. Push any change to `main` → the *Deploy static content to Pages* action runs
+3. Your site goes live at `https://mohabittar.github.io/KBAL-School/`
+
+> ☝️ One Firebase setting is needed before sign-in works from GitHub Pages:
+> **Authentication → Settings → Authorized domains → Add** `mohabittar.github.io`
+> (needed for password-reset links). Normal sign-in, Firestore and chats work
+> without it, but do this for a complete experience.
+
+### 6. Publish to Firebase Hosting
 
 ```bash
 firebase deploy --only hosting
