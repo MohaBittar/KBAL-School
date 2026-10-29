@@ -1,0 +1,12 @@
+{
+  "name": "kbal-school",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KBAL-School — a fully admin-managed school website powered by Firebase.",
+  "scripts": {
+    "dev": "node server.js",
+    "deploy": "firebase deploy",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage",
+    "deploy:hosting": "firebase deploy --only hosting"
+  }
+}

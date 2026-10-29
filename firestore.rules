@@ -1,0 +1,99 @@
+rules_version = '2';
+
+// ============================================================
+// KBAL-School — Firestore security rules
+// Deploy with:  firebase deploy --only firestore:rules
+// ============================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profileExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function myRole() {
+      return profileExists()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : 'guest';
+    }
+
+    function settingsExist() {
+      return exists(/databases/$(database)/documents/site/main);
+    }
+
+    function isAdmin() {
+      return signedIn() && (
+        myRole() == 'admin'
+        // bootstrap admin: works even before the settings document exists
+        || request.auth.token.email == 'mohabittarinfo12@gmail.com'
+        || (settingsExist()
+            && request.auth.token.email in get(/databases/$(database)/documents/site/main).data.adminEmails)
+      );
+    }
+
+    // ---- public content ----
+    match /site/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /categories/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /pages/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /announcements/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ---- classes (students need to read them to join) ----
+    match /classes/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---- user profiles ----
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.role == 'student';
+      allow update: if isAdmin()
+        || (signedIn()
+            && request.auth.uid == userId
+            && request.resource.data.role == resource.data.role);   // users may edit their own profile but never their role
+      allow delete: if isAdmin();
+    }
+
+    // ---- chats: rooms + direct messages ----
+    match /chats/{chatId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update: if signedIn() || isAdmin();
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+        allow update: if isAdmin();            // only admins may edit messages
+        allow delete: if isAdmin()
+          || (signedIn() && resource.data.uid == request.auth.uid);  // authors may delete their own
+      }
+    }
+
+    // everything else is denied
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
