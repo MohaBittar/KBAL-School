@@ -56,9 +56,9 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ---- classes (students need to read them to join) ----
+    // ---- classes (everyone may read them: students need the list to join) ----
     match /classes/{docId} {
-      allow read: if signedIn();
+      allow read: if true;
       allow write: if isAdmin();
     }
 
@@ -67,7 +67,7 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn()
         && request.auth.uid == userId
-        && request.resource.data.role == 'student';
+        && (request.resource.data.role == 'student' || isAdmin());
       allow update: if isAdmin()
         || (signedIn()
             && request.auth.uid == userId
