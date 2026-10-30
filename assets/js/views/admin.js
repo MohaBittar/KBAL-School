@@ -22,6 +22,7 @@ const TABS = [
   { id: "classes", label: "Classes", icon: "🎓" },
   { id: "announcements", label: "Announcements", icon: "📣" },
   { id: "users", label: "Users", icon: "👥" },
+  { id: "database", label: "Database", icon: "🗄️" },
   { id: "settings", label: "Site settings", icon: "⚙️" },
 ];
 
@@ -62,6 +63,7 @@ export async function adminView(container, { tab } = {}, qs = {}) {
     case "classes": await tabClasses(host); break;
     case "announcements": await tabAnnouncements(host); break;
     case "users": await tabUsers(host); break;
+    case "database": await tabDatabase(host); break;
     case "settings": await tabSettings(host); break;
     default: await tabDashboard(host);
   }
@@ -665,6 +667,154 @@ async function tabUsers(host) {
       };
     });
   }
+}
+
+// ============================================================
+// DATABASE — read-only live browser of the Firestore data
+// ============================================================
+const DB_COLLECTIONS = [
+  { id: "site", label: "Site settings", icon: "🏠", hint: "Name, logo, announcement bar, contact info" },
+  { id: "categories", label: "Categories", icon: "🗂️", hint: "Folder groups shown on Browse" },
+  { id: "pages", label: "Pages", icon: "📄", hint: "All page content (blocks, files, images)" },
+  { id: "classes", label: "Classes", icon: "🎓", hint: "Class groups students join" },
+  { id: "announcements", label: "Announcements", icon: "📣", hint: "Posts that notify everyone" },
+  { id: "users", label: "Users", icon: "👥", hint: "Profiles: role, class, theme, permissions" },
+  { id: "chats", label: "Chats", icon: "💬", hint: "Chat rooms (each contains messages)" },
+];
+
+async function tabDatabase(host) {
+  host.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>🗄️ Database</h2><div class="spacer"></div>
+        <input class="input" id="db-search" placeholder="🔎 Filter documents…" style="max-width:240px" />
+        <button class="btn" id="db-refresh">↻ Refresh</button>
+      </div>
+      <p class="form-note">
+        Live view of your Firebase <b>Firestore</b> database (project <code>kbal-school</code>).
+        Read-only — content is edited from the tabs above.
+      </p>
+      <div id="db-stats" class="form-note"></div>
+      <div id="db-list" style="margin-top:12px">${spinner()}</div>
+    </div>`;
+
+  // fetch every collection once; filtering afterwards is instant (no network)
+  let CACHE = null; // { byId: { [collectionId]: { docs, err } }, at: Date }
+
+  host.querySelector("#db-refresh").onclick = () => load(true);
+  host.querySelector("#db-search").addEventListener("input", (e) => paint(e.target.value));
+  await load(false);
+
+  async function load(force) {
+    if (CACHE && !force) return CACHE;
+    const el = host.querySelector("#db-list");
+    if (el) el.innerHTML = spinner();
+    const byId = {};
+    for (const c of DB_COLLECTIONS) {
+      let docs = [], err = null;
+      try {
+        const snap = await getDocs(collection(db, c.id));
+        docs = snap.docs.map((d) => ({ __id: d.id, ...d.data() }));
+      } catch (e) { err = e.message; }
+      // chat rooms → message counts
+      if (c.id === "chats" && !err) {
+        for (const r of docs) {
+          try { r.__msgs = (await getDocs(collection(db, "chats", r.__id, "messages"))).size; }
+          catch { r.__msgs = "?"; }
+        }
+      }
+      // precompute a lowercase haystack so typing is instant
+      for (const d of docs) {
+        try { d.__hay = (d.__id + " " + JSON.stringify(prettyDoc(d))).toLowerCase(); }
+        catch { d.__hay = String(d.__id).toLowerCase(); }
+      }
+      byId[c.id] = { docs, err };
+    }
+    CACHE = { byId, at: new Date() };
+    paint(host.querySelector("#db-search")?.value || "");
+    return CACHE;
+  }
+
+  function paint(filter) {
+    const el = host.querySelector("#db-list");
+    const stats = host.querySelector("#db-stats");
+    if (!el || !CACHE) return;
+    const f = (filter || "").trim().toLowerCase();
+    let shown = 0, total = 0, matchedCollections = 0;
+    const sections = [];
+
+    for (const c of DB_COLLECTIONS) {
+      const { docs, err } = CACHE.byId[c.id];
+      total += docs.length;
+      const matched = f ? docs.filter((d) => d.__hay.includes(f)) : docs;
+      if (f && !matched.length && !err) continue;
+      matchedCollections++;
+      shown += matched.length;
+
+      sections.push(`
+        <details ${f || err ? "open" : ""} style="border:1px solid var(--border);border-radius:12px;margin-bottom:10px;background:var(--panel);padding:8px 14px">
+          <summary style="cursor:pointer;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span>${c.icon}</span>
+            <code>/${esc(c.id)}</code>
+            <span class="form-note" style="font-weight:400">— ${esc(c.hint)}</span>
+            <span class="chip" style="margin-left:auto">${err ? "⚠️" : (f ? matched.length + " / " + docs.length : docs.length) + " docs"}</span>
+          </summary>
+          ${err
+            ? `<p class="form-note" style="color:var(--danger);margin-top:8px">${esc(err)}</p>`
+            : docs.length
+              ? `<div style="margin-top:10px;display:grid;gap:8px">${matched.map((d) => docRow(c, d)).join("")}</div>`
+              : `<p class="form-note" style="margin-top:8px">Empty — no documents yet.</p>`}
+        </details>`);
+    }
+
+    stats.innerHTML = f
+      ? `🔎 “${esc(filter)}” → <b>${shown} documents</b> in ${matchedCollections} of ${DB_COLLECTIONS.length} collections (${total} total) · updated ${esc(CACHE.at.toLocaleString())}`
+      : `📁 ${DB_COLLECTIONS.length} collections · <b>${total} documents</b> · updated ${esc(CACHE.at.toLocaleString())}`;
+    el.innerHTML = sections.join("") || `<div class="empty"><span class="empty-ico">🔎</span>No documents match “${esc(filter)}”.</div>`;
+  }
+
+  function docRow(c, d) {
+    const label = d.title || d.name || d.displayName || d.siteName || d.__id;
+    const sub = [
+      d.email ? esc(d.email) : "",
+      d.role ? `role: <b>${esc(d.role)}</b>` : "",
+      d.canAnnounce === true ? "📣 can announce" : "",
+      d.classId ? "class: " + esc(classOf(d.classId)?.name || d.classId) : "",
+      d.__msgs !== undefined ? `💬 ${d.__msgs} messages` : "",
+      d.published === false ? "🚧 unpublished" : "",
+    ].filter(Boolean).join(" · ");
+    return `
+      <details style="border:1px dashed var(--border);border-radius:9px;padding:6px 10px">
+        <summary style="cursor:pointer;font-size:.92rem">
+          <code>${esc(d.__id)}</code> — <b>${esc(String(label).slice(0, 70))}</b>
+          ${sub ? `<div class="form-note" style="font-size:.8rem">${sub}</div>` : ""}
+        </summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:.78rem;max-height:340px;overflow:auto;margin-top:8px">${esc(prettyDoc(d))}</pre>
+      </details>`;
+  }
+}
+
+function prettyDoc(d) {
+  const out = {};
+  Object.keys(d).sort().forEach((k) => {
+    const v = d[k];
+    if (k === "__hay") {
+      return;                                        // internal search index — never show
+    } else if (k === "__id" || k === "__msgs") {
+      out[k] = v;                                    // doc id / message count helpers
+    } else if (k === "blocks" && Array.isArray(v)) {
+      out.blocks = v.map((b) => `[${b.type}] ${String(b.text || b.url || b.title || "").slice(0, 90)}`);
+    } else if (v && typeof v.toDate === "function") {
+      try { out[k] = v.toDate().toISOString(); } catch { out[k] = "(timestamp)"; }
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = v;                                    // plain nested object
+    } else if (typeof v === "string" && v.length > 300) {
+      out[k] = v.slice(0, 300) + "…";
+    } else {
+      out[k] = v;
+    }
+  });
+  try { return JSON.stringify(out, null, 2); } catch { return String(out); }
 }
 
 // ============================================================
