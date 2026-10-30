@@ -35,6 +35,13 @@ service cloud.firestore {
       );
     }
 
+    // Users explicitly allowed by an admin to publish announcements
+    function canAnnounce() {
+      return isAdmin()
+        || (profileExists()
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.canAnnounce == true);
+    }
+
     // ---- public content ----
     match /site/{docId} {
       allow read: if true;
@@ -53,7 +60,20 @@ service cloud.firestore {
 
     match /announcements/{docId} {
       allow read: if true;
-      allow write: if isAdmin();
+      // admins + users the admin gave the "can announce" permission
+      allow create: if isAdmin() || canAnnounce();
+      allow update, delete: if isAdmin()
+        || (canAnnounce() && resource.data.authorUid == request.auth.uid);
+    }
+
+    // ---- per-user notifications (fan-out when an announcement is posted) ----
+    match /users/{userId}/notifications/{noteId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create: if signedIn()
+        && (isAdmin() || canAnnounce())
+        && request.resource.data.type == 'announcement'
+        && request.resource.data.keys().hasOnly(['type', 'title', 'body', 'annId', 'classId', 'authorName', 'atMs']);
+      allow update, delete: if signedIn() && request.auth.uid == userId;
     }
 
     // ---- classes (everyone may read them: students need the list to join) ----
@@ -67,11 +87,15 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn()
         && request.auth.uid == userId
-        && (request.resource.data.role == 'student' || isAdmin());
+        && (isAdmin()
+            || (request.resource.data.role == 'student'
+                && request.resource.data.get('canAnnounce', false) == false));   // students cannot grant themselves announce rights
       allow update: if isAdmin()
         || (signedIn()
             && request.auth.uid == userId
-            && request.resource.data.role == resource.data.role);   // users may edit their own profile but never their role
+            && request.resource.data.role == resource.data.role                 // users may edit their own profile but never their role
+            && request.resource.data.get('canAnnounce', false)
+               == resource.data.get('canAnnounce', false));                     // ...and never their announce permission
       allow delete: if isAdmin();
     }
 

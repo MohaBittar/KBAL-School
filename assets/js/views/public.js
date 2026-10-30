@@ -1,7 +1,7 @@
 // ============================================================
 // Public views: home, browse, category, page, class, search
 // ============================================================
-import { state, isSignedIn, isAdmin, visibleCategories, visibleAnnouncements, myClass, classOf, categoryOf } from "../store.js";
+import { state, subscribe, isSignedIn, isAdmin, visibleCategories, visibleAnnouncements, myClass, classOf, categoryOf, canAnnounce } from "../store.js";
 import { navigate } from "../router.js";
 import { esc, fmtDate, spinner } from "../ui.js";
 import { renderBlocks } from "../blocks.js";
@@ -43,10 +43,43 @@ export function setupNeededHtml() {
 // ============================================================
 // HOME
 // ============================================================
+/** Announcements panel (re-rendered live so new posts & permissions show up). */
+function homeAnnouncementsHtml() {
+  const s = state.settings || {};
+  const anns = visibleAnnouncements().slice(0, 6);
+  if (s.showAnnouncements === false && !canAnnounce()) return "";
+  if (!anns.length && !canAnnounce()) return "";
+  return `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>📣 Announcements</h2>
+        <div class="spacer"></div>
+        ${canAnnounce() ? `<button class="btn btn-sm btn-primary" id="home-new-ann">📣 New announcement</button>` : ""}
+      </div>
+      ${anns.length
+        ? `<div class="grid cols-3">
+            ${anns.map((a) => `
+              <div class="card" style="cursor:default">
+                <div class="card-meta">${fmtDate(a.atMs)} ${a.classId ? `· <span class="chip">${esc(classOf(a.classId)?.name || "Class")}</span>` : ""}</div>
+                <h3 style="margin-top:8px">${esc(a.title)}</h3>
+                <p>${esc(a.body || "")}</p>
+              </div>`).join("")}
+          </div>`
+        : `<div class="empty"><span class="empty-ico">📣</span>No announcements yet — be the first to post one.</div>`}
+    </div>`;
+}
+
+function wireHomeAnnButton(root = document) {
+  const btn = root.querySelector("#home-new-ann");
+  if (btn) btn.onclick = async () => {
+    const { openAnnouncementComposer } = await import("../layout.js");
+    openAnnouncementComposer();
+  };
+}
+
 export async function homeView(container) {
   const s = state.settings || {};
   const cats = visibleCategories();
-  const anns = visibleAnnouncements().slice(0, 6);
   const cls = myClass();
 
   container.innerHTML = `
@@ -64,18 +97,7 @@ export async function homeView(container) {
       </div>
     </div>
 
-    ${s.showAnnouncements !== false && anns.length ? `
-      <div class="panel">
-        <div class="panel-head"><h2>📣 Announcements</h2></div>
-        <div class="grid cols-3">
-          ${anns.map((a) => `
-            <div class="card" style="cursor:default">
-              <div class="card-meta">${fmtDate(a.atMs)} ${a.classId ? `· <span class="chip">${esc(classOf(a.classId)?.name || "Class")}</span>` : ""}</div>
-              <h3 style="margin-top:8px">${esc(a.title)}</h3>
-              <p>${esc(a.body || "")}</p>
-            </div>`).join("")}
-        </div>
-      </div>` : ""}
+    <div id="home-ann-wrap">${homeAnnouncementsHtml()}</div>
 
     ${cls ? `
       <div class="panel">
@@ -105,6 +127,20 @@ export async function homeView(container) {
       <div id="home-latest">${spinner()}</div>
     </div>`;
 
+  // ---- announcements panel (live: refreshes when posts or permissions change)
+  wireHomeAnnButton(container);
+  let lastAnnHtml = container.querySelector("#home-ann-wrap")?.innerHTML || "";
+  const unsubAnn = subscribe(() => {
+    const wrap = container.querySelector("#home-ann-wrap");
+    if (!wrap || !document.contains(wrap)) return;
+    const html = homeAnnouncementsHtml();
+    if (html !== lastAnnHtml) {
+      lastAnnHtml = html;
+      wrap.innerHTML = html;
+      wireHomeAnnButton(wrap);
+    }
+  });
+
   // ---- class pages (live)
   let clean1 = () => {};
   if (cls) {
@@ -130,7 +166,7 @@ export async function homeView(container) {
       : `<div class="empty"><span class="empty-ico">📚</span>Nothing here yet — an admin can add pages from the admin panel.</div>`;
   });
 
-  return () => { clean1(); clean2(); };
+  return () => { clean1(); clean2(); unsubAnn(); };
 }
 
 function categoryCard(c) {

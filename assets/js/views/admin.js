@@ -2,7 +2,7 @@
 // ADMIN PANEL — controls every part of the site
 // ============================================================
 import {
-  state, isAdmin, uploadFile, classOf, categoryOf, updateProfile, DEFAULT_SETTINGS, seedStarter,
+  state, isAdmin, uploadFile, classOf, categoryOf, updateProfile, DEFAULT_SETTINGS, seedStarter, createAnnouncement,
 } from "../store.js";
 import { navigate } from "../router.js";
 import { esc, fmtDate, toast, confirmBox, openModal, closeModal, spinner } from "../ui.js";
@@ -539,9 +539,17 @@ function annModal(ann, onDone) {
           updatedAt: serverTimestamp(),
         };
         try {
-          if (isNew) await addDoc(collection(db, "announcements"), data);
-          else await updateDoc(doc(db, "announcements", ann.id), data);
-          closeModal(); toast(isNew ? "Announcement published." : "Saved.", "ok"); onDone();
+          if (isNew) {
+            // goes through the shared engine → fans out a notification to every device
+            await createAnnouncement({
+              title,
+              body: data.body,
+              classId: data.classId,
+            });
+          } else {
+            await updateDoc(doc(db, "announcements", ann.id), data);
+          }
+          closeModal(); toast(isNew ? "Announcement published — everyone was notified." : "Saved.", "ok"); onDone();
         } catch (e) { toast(e.message, "error"); }
       };
     },
@@ -593,7 +601,7 @@ async function tabUsers(host) {
     const users = await allUsers();
     el.innerHTML = users.length ? `
       <div class="table-wrap"><table class="list">
-        <thead><tr><th>User</th><th>Role</th><th>Class</th><th>Joined</th><th style="text-align:right">Actions</th></tr></thead>
+        <thead><tr><th>User</th><th>Role</th><th>Class</th><th>📣 Announce</th><th>Joined</th><th style="text-align:right">Actions</th></tr></thead>
         <tbody>${users.map((u) => `
           <tr data-uid="${esc(u.id)}">
             <td>
@@ -611,6 +619,12 @@ async function tabUsers(host) {
                 ${state.classes.map((k) => `<option value="${esc(k.id)}" ${u.classId === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}
               </select>
             </td>
+            <td title="Allow this user to publish announcements (and notify everyone)">
+              <label class="switch" style="margin:0">
+                <input type="checkbox" data-announce ${u.canAnnounce === true ? "checked" : ""} ${u.role === "admin" ? "disabled" : ""}/>
+                <span class="switch-text">${u.role === "admin" ? "always" : "allow"}</span>
+              </label>
+            </td>
             <td class="form-note">${u.createdAt ? fmtDate(u.createdAt, { short: true, noTime: true }) : "—"}</td>
             <td style="text-align:right;white-space:nowrap">
               <button class="btn btn-sm btn-primary" data-save>Save</button>
@@ -626,10 +640,11 @@ async function tabUsers(host) {
       tr.querySelector("[data-save]").onclick = async () => {
         const role = tr.querySelector("[data-role]").value;
         const classId = tr.querySelector("[data-class]").value || null;
+        const canAnnounce = role === "admin" ? true : tr.querySelector("[data-announce]").checked;
         try {
-          await updateDoc(doc(db, "users", uid), { role, classId, updatedAt: serverTimestamp() });
+          await updateDoc(doc(db, "users", uid), { role, classId, canAnnounce, updatedAt: serverTimestamp() });
           toast(`${u.displayName || "User"} updated.`, "ok");
-          if (uid === state.user.uid) await updateProfile({ role, classId });
+          if (uid === state.user.uid) await updateProfile({ role, classId, canAnnounce });
         } catch (e) { toast(e.message, "error"); }
       };
       tr.querySelector("[data-reset]").onclick = async () => {

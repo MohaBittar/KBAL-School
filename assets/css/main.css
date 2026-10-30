@@ -117,6 +117,28 @@ p { margin: 0 0 1em; }
   background: var(--panel); color: var(--text); cursor: pointer;
 }
 .icon-btn:hover { background: var(--accent-soft); }
+
+/* notification bell */
+.bell-btn { position: relative; font-size: 1.05rem; }
+.bell-badge {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 999px;
+  background: #e5484d; color: #fff;
+  font-size: .68rem; font-weight: 700; line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.bell-btn.ring { animation: bell-ring .6s ease; }
+@keyframes bell-ring {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(16deg); }
+  40% { transform: rotate(-14deg); }
+  60% { transform: rotate(9deg); }
+  80% { transform: rotate(-6deg); }
+}
+.switch-text { font-size: .8rem; color: var(--muted); }
+
 #nav-toggle { display: none; }
 
 .user-btn { display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--text); cursor: pointer; font: inherit; }

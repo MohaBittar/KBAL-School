@@ -1,7 +1,7 @@
 // ============================================================
 // My account: profile, class, appearance (theme), security
 // ============================================================
-import { state, setTheme, getTheme, THEME_DEFAULTS, updateProfile, uploadFile, changePassword, sendReset } from "../store.js";
+import { state, setTheme, getTheme, THEME_DEFAULTS, updateProfile, uploadFile, changePassword, sendReset, enableDeviceNotifications, canAnnounce } from "../store.js";
 import { navigate } from "../router.js";
 import { esc, toast, openModal, closeModal } from "../ui.js";
 
@@ -118,6 +118,35 @@ export async function accountView(container) {
       </div>
 
       <div class="panel">
+        <div class="panel-head"><h2>🔔 Notifications</h2></div>
+        <p class="form-note">
+          Get an alert on this device whenever a new 📣 announcement is published.
+        </p>
+        <div class="field">
+          <label>Browser notifications</label>
+          <div id="notif-state" class="form-note">${typeof Notification === "undefined"
+            ? "This browser does not support notifications."
+            : Notification.permission === "granted"
+              ? "✅ Enabled — you will be notified."
+              : Notification.permission === "denied"
+                ? "⛔ Blocked. Allow notifications for this site in your browser's address-bar lock icon, then reload."
+                : "🔕 Not enabled yet."}</div>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="enable-notif" ${typeof Notification !== "undefined" && Notification.permission === "granted" ? "disabled" : ""}>
+            🔔 Enable device notifications
+          </button>
+          <button class="btn" id="test-notif">🔔 Send test alert</button>
+        </div>
+        <div class="field" style="margin-top:14px">
+          <label>Your permissions</label>
+          <div class="form-note">${canAnnounce()
+            ? "📣 You <b>can</b> publish announcements — use the <b>New announcement</b> button in the top bar."
+            : "Only admins (and users they allow) can publish announcements."}</div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-head"><h2>🔒 Security</h2></div>
         <form id="pw-form">
           <div class="field">
@@ -193,6 +222,34 @@ export async function accountView(container) {
     container.querySelector("[data-bg]").checked = !cur.reduceBg;
     container.querySelector("[data-contrast]").checked = cur.contrast === "high";
   }
+
+  // ---------------- notifications ----------------
+  const enableBtn = container.querySelector("#enable-notif");
+  if (enableBtn) enableBtn.onclick = async () => {
+    try {
+      await enableDeviceNotifications();
+      toast("Device notifications enabled.", "ok");
+      // refresh the panel state text without a full reload
+      const st = container.querySelector("#notif-state");
+      if (st) st.textContent = "✅ Enabled — you will be notified.";
+      enableBtn.disabled = true;
+    } catch (e) { toast(e.message, "error"); }
+  };
+  const testBtn = container.querySelector("#test-notif");
+  if (testBtn) testBtn.onclick = () => {
+    try {
+      if (typeof Notification === "undefined") throw new Error("This browser does not support notifications.");
+      if (Notification.permission !== "granted") {
+        Notification.requestPermission().then((perm) => {
+          if (perm === "granted") new Notification("🔔 Test alert", { body: "Notifications are working for KBAL-School!" });
+          else toast("Permission not granted.", "error");
+        });
+        return;
+      }
+      new Notification("🔔 Test alert", { body: "Notifications are working for KBAL-School!" });
+      toast("Test notification sent.", "ok");
+    } catch (e) { toast(e.message, "error"); }
+  };
 
   // ---------------- security ----------------
   const pwForm = container.querySelector("#pw-form");

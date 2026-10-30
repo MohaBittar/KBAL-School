@@ -8,7 +8,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   doc, collection, onSnapshot, query, orderBy, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
-  serverTimestamp, where, addDoc,
+  serverTimestamp, where, addDoc, writeBatch, limit,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 export const state = {
@@ -18,6 +18,8 @@ export const state = {
   categories: [],      // categories collection (ordered)
   classes: [],         // classes collection (ordered)
   announcements: [],   // announcements collection (newest first)
+  notifications: [],   // my notifications (newest first)
+  unread: 0,           // how many notifications I have not opened yet
   booting: true,
 };
 
@@ -76,10 +78,14 @@ export async function init() {
           await ensureProfile(user);
         } catch (e) { console.warn("profile:", e.message); }
         try { watchProfile(user.uid); } catch (e) { console.warn("profile watch:", e.message); }
+        try { watchNotifications(user.uid); } catch (e) { console.warn("notifications watch:", e.message); }
         if (isAdmin()) { try { await maybeCreateSettings(); } catch (e) { console.warn(e.message); } }
       } else {
         stopProfileWatch();
+        stopNotificationsWatch();
         state.profile = null;
+        state.notifications = [];
+        state.unread = 0;
         profileLoaded = false;
         applyTheme(getLocalTheme());
       }
@@ -142,6 +148,141 @@ export async function maybeCreateSettings() {
       await setDoc(doc(db, "site", "main"), { ...DEFAULT_SETTINGS, updatedAt: serverTimestamp() });
     }
   } catch (e) { console.warn("settings:", e.message); }
+}
+
+// ============================================================
+// NOTIFICATIONS (delivered to every user's device)
+// ============================================================
+import { toast } from "./ui.js";
+
+let unsubNotes = null;
+let seenNoteIds = null; // null until the first snapshot (baseline, no spam on login)
+
+function watchNotifications(uid) {
+  stopNotificationsWatch();
+  seenNoteIds = null;
+  unsubNotes = onSnapshot(
+    query(collection(db, "users", uid, "notifications"), orderBy("atMs", "desc"), limit(50)),
+    (snap) => {
+      state.notifications = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      state.unread = state.notifications.length;
+      if (seenNoteIds === null) {
+        seenNoteIds = new Set(state.notifications.map((n) => n.id));
+        emit();
+        return;
+      }
+      state.notifications
+        .filter((n) => !seenNoteIds.has(n.id))
+        .forEach((n) => { seenNoteIds.add(n.id); alertDevice(n); });
+      emit();
+    },
+    (e) => console.warn("notifications:", e.message)
+  );
+}
+
+function stopNotificationsWatch() {
+  if (unsubNotes) { unsubNotes(); unsubNotes = null; }
+  seenNoteIds = null;
+}
+
+/** Fire the on-device alert: in-app toast + system notification + sound. */
+function alertDevice(n) {
+  toast(n.body || n.title || "", "", `📣 ${n.title || "Announcement"}`);
+  try {
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      new Notification(n.title || "KBAL-School", {
+        body: n.body || "",
+        icon: state.settings?.logoUrl || undefined,
+        tag: n.annId || n.id,
+      });
+    }
+  } catch {}
+  playDing();
+}
+
+function playDing() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1174, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.5);
+    osc.onended = () => ctx.close().catch(() => {});
+  } catch {}
+}
+
+/** Who may publish announcements: admins + users granted by the admin. */
+export function canAnnounce() {
+  return isAdmin() || state.profile?.canAnnounce === true;
+}
+
+/** Open one notification (removes it → it no longer counts as unread). */
+export async function markNotificationRead(id) {
+  if (!state.user) return;
+  try { await deleteDoc(doc(db, "users", state.user.uid, "notifications", id)); } catch {}
+}
+
+export async function markAllNotificationsRead() {
+  if (!state.user || !state.notifications.length) return;
+  const ids = state.notifications.map((n) => n.id);
+  for (let i = 0; i < ids.length; i += 400) {
+    const batch = writeBatch(db);
+    ids.slice(i, i + 400).forEach((id) => batch.delete(doc(db, "users", state.user.uid, "notifications", id)));
+    await batch.commit().catch(() => {});
+  }
+}
+
+/**
+ * Publish an announcement AND push a notification to every relevant device.
+ * audience: null = everybody, otherwise only that class (+ admins).
+ */
+export async function createAnnouncement({ title, body = "", classId = null }) {
+  if (!state.user) throw new Error("Sign in first.");
+  if (!canAnnounce()) throw new Error("You do not have permission to publish announcements.");
+  const now = Date.now();
+  const authorName = state.profile?.displayName || "Announcement";
+
+  const ref = await addDoc(collection(db, "announcements"), {
+    title, body, classId, atMs: now,
+    authorUid: state.user.uid, authorName,
+    updatedAt: serverTimestamp(),
+  });
+
+  // ---- fan-out to every device ----
+  const all = await collect(query(collection(db, "users")));
+  const targets = all.filter((u) =>
+    u.id !== state.user.uid &&
+    (!classId || u.classId === classId || u.role === "admin")
+  );
+  for (let i = 0; i < targets.length; i += 400) {
+    const batch = writeBatch(db);
+    targets.slice(i, i + 400).forEach((u) => {
+      batch.set(doc(db, "users", u.id, "notifications", ref.id), {
+        type: "announcement", title, body, annId: ref.id,
+        classId, authorName, atMs: now,
+      });
+    });
+    await batch.commit().catch((e) => console.warn("notify:", e.message));
+  }
+  return ref.id;
+}
+
+/** Ask the browser for system-notification permission (used by My account). */
+export async function enableDeviceNotifications() {
+  if (typeof Notification === "undefined") throw new Error("This browser does not support notifications.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("Permission was not granted.");
+  new Notification("Notifications enabled ✅", { body: "You will be alerted about new announcements." });
+  return perm;
 }
 
 /** One-click starter content so a fresh install is not empty. */
@@ -344,8 +485,41 @@ export async function uploadFile(file, folder = "uploads") {
   const safe = (file.name || "file").replace(/[^\w.\-]+/g, "_");
   const path = `${folder}/${Date.now()}_${safe}`;
   const r = ref(storage, path);
-  await uploadBytes(r, file, { contentType: file.type });
-  return { url: await getDownloadURL(r), name: file.name, size: file.size, type: file.type, path };
+  try {
+    await uploadBytes(r, file, { contentType: file.type });
+  } catch (e) {
+    throw new Error(humanUploadError(e));
+  }
+  try {
+    return { url: await getDownloadURL(r), name: file.name, size: file.size, type: file.type, path };
+  } catch (e) {
+    throw new Error(humanUploadError(e));
+  }
+}
+
+/** Turn cryptic Firebase Storage errors into messages a person can act on. */
+function humanUploadError(e) {
+  const code = String(e?.code || "");
+  const msg = String(e?.message || e || "");
+  if (code.includes("storage/bucket-not-found") || code.includes("storage/unknown") ||
+      msg.includes("Firebase Storage has not been set up") || msg.includes("project is not configured")) {
+    return "File uploads are switched off on the Firebase project. Open Firebase Console → Storage → Get started (free plan), then reload this page.";
+  }
+  if (code.includes("storage/unauthorized") || msg.includes("unauthorized") || msg.includes("permission")) {
+    return "Upload blocked by security rules — sign in first, or ask the admin to check storage.rules.";
+  }
+  if (code.includes("storage/canceled")) return "Upload canceled.";
+  if (code.includes("storage/retry-limit-exceeded") || code.includes("storage/network-request-failed")) {
+    return "Network problem while uploading — check your connection and try again.";
+  }
+  if (code.includes("storage/invalid-checksum")) return "The file was corrupted in transit — please try again.";
+  if (fileTooLarge(msg, e)) return "That file is too large (limit is 20 MB).";
+  return msg.replace(/^FirebaseError: /, "") || "Upload failed for an unknown reason.";
+}
+
+function fileTooLarge(msg, e) {
+  return String(e?.code || "").includes("storage/unknown") && msg.includes("size") ||
+         /exceeds|too large|maximum/i.test(msg);
 }
 
 export const DEFAULT_SETTINGS = {
