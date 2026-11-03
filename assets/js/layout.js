@@ -2,11 +2,11 @@
 // Chrome: topbar user menu, sidebar (categories), footer, bar
 // ============================================================
 import {
-  state, subscribe, isAdmin, isSignedIn, signOutUser, visibleCategories, myClass, classOf, updateProfile,
+  state, subscribe, isAdmin, isSignedIn, signOutUser, visibleCategories, visibleTodos, myClass, classOf, updateProfile,
   canAnnounce, createAnnouncement, markNotificationRead, markAllNotificationsRead,
 } from "./store.js";
 import { navigate, currentPath } from "./router.js";
-import { esc, initials, openModal, closeModal, toast } from "./ui.js";
+import { esc, initials, openModal, closeModal, toast, fmtDate } from "./ui.js";
 
 export function initLayout() {
   wireNavToggle();
@@ -123,6 +123,10 @@ export function openAnnouncementComposer() {
           ${classSelectHtml("", { allowAll: true, name: "classId" })}
           <div class="form-note">🔔 Every signed-in user in the selected audience gets a notification on this device.</div>
         </div>
+        <div class="field">
+          <label>Publish date & time <span class="hint">(leave blank to publish now)</span></label>
+          <input class="input" name="scheduledAt" type="datetime-local" />
+        </div>
         <div id="ann-err" class="form-note" style="color:var(--danger)"></div>
       </form>`,
     footer: `
@@ -139,13 +143,19 @@ export function openAnnouncementComposer() {
         btn.disabled = true;
         btn.textContent = "Publishing…";
         try {
+          const scheduledInput = form.scheduledAt.value;
+          const scheduledAt = scheduledInput ? new Date(scheduledInput).getTime() : null;
           await createAnnouncement({
             title,
             body: form.body.value.trim(),
             classId: form.classId.value || null,
+            scheduledAt,
           });
           closeModal();
-          toast("Announcement published — everyone was notified.", "ok", "📣 Done");
+          const msg = scheduledAt
+            ? "Announcement scheduled — it will publish automatically at the chosen time."
+            : "Announcement published — everyone was notified.";
+          toast(msg, "ok", "📣 Done");
           // re-render the current view so the new announcement shows up right away
           try { navigate(currentPath()); } catch {}
         } catch (e) {
@@ -229,6 +239,21 @@ function renderSidebar() {
             ${c.classId ? `<span class="side-badge">${esc(classOf(c.classId)?.name || "Class")}</span>` : ""}
           </a>`).join("")
         : `<div style="padding:6px 12px;color:var(--muted);font-size:.88rem">No categories yet.</div>`}
+    </div>
+
+    <div class="side-section">
+      <div class="side-title">✅ To-do lists</div>
+      ${isSignedIn()
+        ? `
+          ${visibleTodos().length
+            ? visibleTodos().map((t) => `
+              <a class="side-link ${path === "/admin/todos" ? "active" : ""}" href="#/admin/todos" title="${esc(t.description || t.name || t.title)}">
+                <span class="ico">${t.done ? "✅" : "⬜"}</span> ${esc(t.title)}
+                ${t.dueAt ? `<span class="side-badge">${fmtDate(t.dueAt, { short: true, noTime: true })}</span>` : ""}
+              </a>`).join("")
+            : `<div style="padding:6px 12px;color:var(--muted);font-size:.88rem">No to-do items yet.</div>`}
+          ${admin ? `<div style="padding:6px 12px"><a class="btn btn-sm btn-primary" href="#/admin/todos" style="width:100%;text-align:center">Manage to-dos</a></div>` : ""}`
+        : `<div style="padding:6px 12px;color:var(--muted);font-size:.88rem">Sign in to see to-do lists.</div>`}
     </div>`;
 }
 

@@ -192,6 +192,11 @@ export class BlockEditor {
       };
     });
 
+    // remove an uploaded (inline) image/file
+    el.querySelectorAll("[data-clear]").forEach((btn) => {
+      btn.onclick = () => { this.blocks[i].url = ""; this.render(); };
+    });
+
     return el;
   }
 
@@ -209,12 +214,16 @@ export class BlockEditor {
       case "text":
         return `<div class="field"><label>Text <span class="hint">(supports **bold**, *italic*, [links](https://…))</span></label>
           <textarea class="input" data-f="text" rows="4">${esc(b.text || "")}</textarea></div>`;
-      case "image":
+      case "image": {
+        const isData = String(b.url || "").startsWith("data:");
         return `
           <div class="field"><label>Image</label>
             <div class="row">
-              <input class="input" data-f="url" value="${esc(b.url || "")}" placeholder="https://… or upload" />
+              ${isData
+                ? `<input class="input" value="✅ Uploaded (stored in this page)" readonly />`
+                : `<input class="input" data-f="url" value="${esc(b.url || "")}" placeholder="https://… or upload" />`}
               <button type="button" class="btn" data-upload style="flex:0 0 auto">⬆ Upload</button>
+              ${isData ? `<button type="button" class="btn btn-danger" data-clear style="flex:0 0 auto" title="Remove image">✕</button>` : ""}
             </div>
           </div>
           ${b.url ? `<div style="margin-bottom:10px"><img src="${esc(b.url)}" style="max-height:150px;border-radius:9px;border:1px solid var(--border)" /></div>` : ""}
@@ -226,15 +235,21 @@ export class BlockEditor {
                 <option value="left" ${b.align !== "center" ? "selected" : ""}>Left</option>
               </select></div>
           </div>`;
-      case "file":
+      }
+      case "file": {
+        const isData = String(b.url || "").startsWith("data:");
         return `
           <div class="field"><label>File</label>
             <div class="row">
-              <input class="input" data-f="url" value="${esc(b.url || "")}" placeholder="https://… or upload" />
+              ${isData
+                ? `<input class="input" value="✅ Uploaded (stored in this page)" readonly />`
+                : `<input class="input" data-f="url" value="${esc(b.url || "")}" placeholder="https://… or upload" />`}
               <button type="button" class="btn" data-upload style="flex:0 0 auto">⬆ Upload</button>
+              ${isData ? `<button type="button" class="btn btn-danger" data-clear style="flex:0 0 auto" title="Remove file">✕</button>` : ""}
             </div>
           </div>
           <div class="field"><label>Display name</label><input class="input" data-f="name" value="${esc(b.name || "")}" placeholder="Worksheet.pdf" /></div>`;
+      }
       case "list":
         return `
           <div class="field"><label>Items (one per line)</label><textarea class="input" data-f="items" rows="4">${esc(b.items || "")}</textarea></div>

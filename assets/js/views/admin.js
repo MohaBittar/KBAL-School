@@ -3,6 +3,7 @@
 // ============================================================
 import {
   state, isAdmin, uploadFile, classOf, categoryOf, updateProfile, DEFAULT_SETTINGS, seedStarter, createAnnouncement,
+  visibleTodos, addTodo, updateTodo, deleteTodo, toggleTodo, todosFor, publishScheduledAnnouncement,
 } from "../store.js";
 import { navigate } from "../router.js";
 import { esc, fmtDate, toast, confirmBox, openModal, closeModal, spinner } from "../ui.js";
@@ -21,6 +22,7 @@ const TABS = [
   { id: "pages", label: "Pages", icon: "📄" },
   { id: "classes", label: "Classes", icon: "🎓" },
   { id: "announcements", label: "Announcements", icon: "📣" },
+  { id: "todos", label: "To-do lists", icon: "✅" },
   { id: "users", label: "Users", icon: "👥" },
   { id: "database", label: "Database", icon: "🗄️" },
   { id: "settings", label: "Site settings", icon: "⚙️" },
@@ -62,6 +64,7 @@ export async function adminView(container, { tab } = {}, qs = {}) {
     case "pages": await tabPages(host, qs.get("edit")); break;
     case "classes": await tabClasses(host); break;
     case "announcements": await tabAnnouncements(host); break;
+    case "todos": await tabTodos(host); break;
     case "users": await tabUsers(host); break;
     case "database": await tabDatabase(host); break;
     case "settings": await tabSettings(host); break;
@@ -271,7 +274,9 @@ async function tabPages(host, editId) {
     el.innerHTML = pages.length ? `
       <div class="table-wrap"><table class="list">
         <thead><tr><th>Title</th><th>Category</th><th>Class</th><th>Blocks</th><th>Updated</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
-        <tbody>${pages.map((p) => `
+        <tbody>${pages.map((p) => {
+          const linked = todosFor("page", p.id).length;
+          return `
           <tr>
             <td><b>${esc(p.title)}</b></td>
             <td>${esc(categoryOf(p.categoryId)?.name || "—")}</td>
@@ -280,11 +285,13 @@ async function tabPages(host, editId) {
             <td class="form-note">${fmtDate(p.updatedAtMs || p.createdAtMs, { short: true, noTime: true })}</td>
             <td>${p.published === false ? `<span class="chip amber">Draft</span>` : `<span class="chip green">Live</span>`}</td>
             <td style="text-align:right;white-space:nowrap">
+              ${linked ? `<span class="chip" style="font-size:.75rem">${linked} to-do${linked > 1 ? "s" : ""}</span>` : ""}
               <a class="btn btn-sm" href="#/page/${esc(p.id)}">View</a>
               <button class="btn btn-sm" data-edit="${esc(p.id)}">Edit</button>
               <button class="btn btn-sm btn-danger" data-del="${esc(p.id)}">Delete</button>
             </td>
-          </tr>`).join("")}</tbody>
+          </tr>`;
+        }).join("")}</tbody>
       </table></div>` : `<div class="empty"><span class="empty-ico">📄</span>No pages yet. Click “New page” to create one with text, images, files, videos and more.</div>`;
 
     el.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = async () => {
@@ -490,18 +497,26 @@ async function tabAnnouncements(host) {
     const el = host.querySelector("#ann-list");
     el.innerHTML = state.announcements.length ? `
       <div class="table-wrap"><table class="list">
-        <thead><tr><th>Title</th><th>Body</th><th>Audience</th><th>Date</th><th style="text-align:right">Actions</th></tr></thead>
-        <tbody>${state.announcements.map((a) => `
+        <thead><tr><th>Title</th><th>Body</th><th>Audience</th><th>Date</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
+        <tbody>${state.announcements.map((a) => {
+          const linked = todosFor("announcement", a.id).length;
+          const statusChip = a.status === "scheduled"
+            ? `<span class="chip amber">⏰ Scheduled</span>`
+            : `<span class="chip green">✅ Published</span>`;
+          return `
           <tr>
             <td><b>${esc(a.title)}</b></td>
             <td class="form-note">${esc((a.body || "").slice(0, 70))}</td>
             <td>${a.classId ? `<span class="chip">${esc(classOf(a.classId)?.name || "—")}</span>` : `<span class="chip gray">Everyone</span>`}</td>
             <td class="form-note">${fmtDate(a.atMs, { short: true, noTime: true })}</td>
+            <td>${statusChip}</td>
             <td style="text-align:right;white-space:nowrap">
+              ${linked ? `<span class="chip" style="font-size:.75rem">${linked} to-do${linked > 1 ? "s" : ""}</span>` : ""}
               <button class="btn btn-sm" data-edit="${esc(a.id)}">Edit</button>
               <button class="btn btn-sm btn-danger" data-del="${esc(a.id)}">Delete</button>
             </td>
-          </tr>`).join("")}</tbody>
+          </tr>`;
+        }).join("")}</tbody>
       </table></div>` : `<div class="empty"><span class="empty-ico">📣</span>No announcements yet.</div>`;
 
     el.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => annModal(state.announcements.find((a) => a.id === b.dataset.edit), render)));
@@ -516,7 +531,7 @@ async function tabAnnouncements(host) {
 
 function annModal(ann, onDone) {
   const isNew = !ann;
-  const a = ann || { title: "", body: "", classId: "" };
+  const a = ann || { title: "", body: "", classId: "", scheduledAt: null, status: "published" };
   openModal({
     title: isNew ? "➕ New announcement" : "✏️ Edit announcement",
     body: `
@@ -526,33 +541,157 @@ function annModal(ann, onDone) {
         <select class="input" name="classId">
           <option value="">Everyone</option>
           ${state.classes.map((k) => `<option value="${esc(k.id)}" ${a.classId === k.id ? "selected" : ""}>${esc(k.name)} only</option>`).join("")}
-        </select></div>`,
+        </select></div>
+      <div class="field"><label>Publish date & time <span class="hint">(leave blank to publish now)</span></label>
+        <input class="input" name="scheduledAt" type="datetime-local" value="${a.scheduledAt ? new Date(a.scheduledAt).toISOString().slice(0, 16) : ""}" /></div>
+      ${a.status === "scheduled" ? `<div class="form-note" style="color:var(--accent)">⏰ Scheduled to publish on ${new Date(a.scheduledAt).toLocaleString()}</div>` : ""}
+      ${a.status === "published" ? `<div class="form-note" style="color:var(--muted)">✅ Already published</div>` : ""}`,
     footer: `<button class="btn" data-x="cancel">Cancel</button><button class="btn btn-primary" data-x="save">${isNew ? "Publish" : "Save"}</button>`,
     onMount(m) {
       m.querySelector('[data-x="cancel"]').onclick = closeModal;
       m.querySelector('[data-x="save"]').onclick = async () => {
         const title = m.querySelector('[name="title"]').value.trim();
         if (!title) return toast("Please enter a title.", "error");
+        const scheduledInput = m.querySelector('[name="scheduledAt"]').value;
+        const scheduledAt = scheduledInput ? new Date(scheduledInput).getTime() : null;
         const data = {
           title,
           body: m.querySelector('[name="body"]').value.trim(),
           classId: m.querySelector('[name="classId"]').value || null,
-          atMs: ann?.atMs || Date.now(),
+          scheduledAt,
           updatedAt: serverTimestamp(),
         };
         try {
           if (isNew) {
-            // goes through the shared engine → fans out a notification to every device
             await createAnnouncement({
               title,
               body: data.body,
               classId: data.classId,
+              scheduledAt: data.scheduledAt,
             });
+            const msg = data.scheduledAt ? "Announcement scheduled — it will publish automatically at the chosen time." : "Announcement published — everyone was notified.";
+            closeModal(); toast(msg, "ok"); onDone();
           } else {
             await updateDoc(doc(db, "announcements", ann.id), data);
+            closeModal(); toast("Saved.", "ok"); onDone();
           }
-          closeModal(); toast(isNew ? "Announcement published — everyone was notified." : "Saved.", "ok"); onDone();
         } catch (e) { toast(e.message, "error"); }
+      };
+    },
+  });
+}
+
+// ============================================================
+// TO-DO LISTS
+// ============================================================
+async function tabTodos(host) {
+  host.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>✅ To-do lists</h2><div class="spacer"></div>
+        <button class="btn btn-primary" id="add-todo">+ Add to-do</button>
+      </div>
+      <div id="todo-list">${spinner()}</div>
+    </div>`;
+
+  host.querySelector("#add-todo").onclick = () => todoModal(null, render);
+  await render();
+
+  async function render() {
+    const el = host.querySelector("#todo-list");
+    const todos = visibleTodos();
+    const admin = isAdmin();
+    el.innerHTML = todos.length ? `
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Done</th><th>To-do</th><th>Description</th><th>Class</th><th>Due</th><th style="text-align:right">Actions</th></tr></thead>
+        <tbody>${todos.map((t) => `
+          <tr>
+            <td style="text-align:center">
+              <label class="switch" style="margin:0">
+                <input type="checkbox" data-toggle="${esc(t.id)}" ${t.done ? "checked" : ""} ${admin ? "" : "disabled"}/>
+              </label>
+            </td>
+            <td>
+              ${t.done ? `<span style="text-decoration:line-through;color:var(--muted)">${esc(t.title)}</span>` : `<b>${esc(t.title)}</b>`}
+              ${t.hidden ? `<span class="chip amber" style="font-size:.75rem;margin-left:6px">Hidden</span>` : ""}
+            </td>
+            <td class="form-note">${esc((t.description || "").slice(0, 70))}</td>
+            <td>${t.classId ? `<span class="chip">${esc(classOf(t.classId)?.name || "—")}</span>` : `<span class="chip gray">Everyone</span>`}</td>
+            <td class="form-note">${t.dueAt ? fmtDate(t.dueAt, { short: true, noTime: true }) : "—"}</td>
+            <td style="text-align:right;white-space:nowrap">
+              ${admin ? `<button class="btn btn-sm" data-edit="${esc(t.id)}">Edit</button>
+              <button class="btn btn-sm btn-danger" data-del="${esc(t.id)}">Delete</button>` : ""}
+            </td>
+          </tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty"><span class="empty-ico">✅</span>No to-do items yet. Add your first one — e.g. “Publish exam schedule”.</div>`;
+
+    el.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => todoModal(state.todos.find((t) => t.id === b.dataset.edit), render)));
+    el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
+      if (await confirmBox(`Delete the to-do “${state.todos.find((t) => t.id === b.dataset.del)?.title}"?`)) {
+        await deleteTodo(b.dataset.del).catch((e) => toast(e.message, "error"));
+        toast("To-do deleted.", "ok");
+      }
+    }));
+    el.querySelectorAll("[data-toggle]").forEach((b) => {
+      b.onclick = async () => {
+        const todo = state.todos.find((t) => t.id === b.dataset.toggle);
+        if (!todo) return;
+        try { await toggleTodo(b.dataset.toggle, !todo.done); toast(todo.done ? "Reopened to-do." : "To-do completed.", "ok"); }
+        catch (e) { toast(e.message, "error"); b.checked = todo.done; }
+      };
+    });
+  }
+}
+
+function todoModal(todo, onDone) {
+  const isNew = !todo;
+  const t = todo || { title: "", description: "", dueAt: "", classId: "", hidden: false, order: state.todos.length + 1, relatedType: null, relatedId: null };
+  openModal({
+    title: isNew ? "➕ Add to-do" : "✏️ Edit to-do",
+    body: `
+      <div class="field"><label>Title *</label><input class="input" name="title" value="${esc(t.title)}" required /></div>
+      <div class="field"><label>Description</label><textarea class="input" name="description" rows="2">${esc(t.description || "")}</textarea></div>
+      <div class="row">
+        <div class="field" style="max-width:170px"><label>Due date</label><input class="input" name="dueAt" type="date" value="${t.dueAt ? new Date(t.dueAt).toISOString().slice(0, 10) : ""}" /></div>
+        <div class="field" style="max-width:130px"><label>Order</label><input class="input" name="order" type="number" value="${t.order ?? 1}" /></div>
+        <div class="field"><label>Limit to class</label>
+          <select class="input" name="classId">
+            <option value="">Visible to everyone</option>
+            ${state.classes.map((k) => `<option value="${esc(k.id)}" ${t.classId === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}
+          </select></div>
+      </div>
+      <div class="field"><label>Link to <span class="hint">(optional — attach this to-do to a page or announcement)</span></label>
+        <select class="input" name="relatedType">
+          <option value="">None</option>
+          <option value="page" ${t.relatedType === "page" ? "selected" : ""}>Page</option>
+          <option value="announcement" ${t.relatedType === "announcement" ? "selected" : ""}>Announcement</option>
+        </select>
+        <input class="input" name="relatedId" placeholder="Page/Announcement ID" value="${esc(t.relatedId || "")}" />
+      </div>
+      <label class="switch"><input type="checkbox" name="hidden" ${t.hidden ? "checked" : ""}/> Hidden from students (admins only)</label>`,
+    footer: `<button class="btn" data-x="cancel">Cancel</button><button class="btn btn-primary" data-x="save">${isNew ? "Add to-do" : "Save changes"}</button>`,
+    onMount(m) {
+      m.querySelector('[data-x="cancel"]').onclick = closeModal;
+      m.querySelector('[data-x="save"]').onclick = async () => {
+        const title = m.querySelector('[name="title"]').value.trim();
+        if (!title) return toast("Please enter a title.", "error");
+        const dueAtInput = m.querySelector('[name="dueAt"]').value;
+        const dueAt = dueAtInput ? new Date(dueAtInput + "T00:00:00").getTime() : null;
+        const data = {
+          title,
+          description: m.querySelector('[name="description"]').value.trim(),
+          dueAt,
+          classId: m.querySelector('[name="classId"]').value || null,
+          relatedType: m.querySelector('[name="relatedType"]').value || null,
+          relatedId: m.querySelector('[name="relatedId"]').value.trim() || null,
+          hidden: m.querySelector('[name="hidden"]').checked,
+          order: +m.querySelector('[name="order"]').value || 1,
+        };
+        try {
+          if (isNew) await addTodo(data);
+          else await updateTodo(t.id, data);
+          closeModal(); toast(isNew ? "To-do added." : "To-do saved.", "ok"); onDone();
+        } catch (e) { toast(e.message, "error", "Save failed"); }
       };
     },
   });
@@ -678,6 +817,7 @@ const DB_COLLECTIONS = [
   { id: "pages", label: "Pages", icon: "📄", hint: "All page content (blocks, files, images)" },
   { id: "classes", label: "Classes", icon: "🎓", hint: "Class groups students join" },
   { id: "announcements", label: "Announcements", icon: "📣", hint: "Posts that notify everyone" },
+  { id: "todos", label: "To-do lists", icon: "✅", hint: "Admin-managed to-do items" },
   { id: "users", label: "Users", icon: "👥", hint: "Profiles: role, class, theme, permissions" },
   { id: "chats", label: "Chats", icon: "💬", hint: "Chat rooms (each contains messages)" },
 ];

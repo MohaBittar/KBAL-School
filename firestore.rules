@@ -66,6 +66,12 @@ service cloud.firestore {
         || (canAnnounce() && resource.data.authorUid == request.auth.uid);
     }
 
+    // ---- to-do lists: everyone reads, admins write ----
+    match /todos/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ---- per-user notifications (fan-out when an announcement is posted) ----
     match /users/{userId}/notifications/{noteId} {
       allow read: if signedIn() && request.auth.uid == userId;
@@ -98,6 +104,7 @@ service cloud.firestore {
                == resource.data.get('canAnnounce', false));                     // ...and never their announce permission
       allow delete: if isAdmin();
     }
+
 
     // ---- chats: rooms + direct messages ----
     match /chats/{chatId} {

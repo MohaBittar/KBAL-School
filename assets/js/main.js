@@ -1,7 +1,7 @@
 // ============================================================
 // KBAL-School — app bootstrap
 // ============================================================
-import { init, subscribe, applyTheme, getLocalTheme, state } from "./store.js";
+import { init, subscribe, applyTheme, getLocalTheme, state, runScheduler } from "./store.js";
 import { initAnalytics } from "./firebase.js";
 import { route, startRouter, navigate } from "./router.js";
 import { initLayout } from "./layout.js";
@@ -53,6 +53,7 @@ route("/admin/:tab", adminView);
   boot.remove();
   startRouter();
   initAnalytics();
+  runScheduler();
 
   // keep the layout in sync with auth changes (redirect to sign-in when signed out)
   subscribe((s) => {

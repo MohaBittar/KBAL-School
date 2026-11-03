@@ -1,7 +1,7 @@
 // ============================================================
 // Public views: home, browse, category, page, class, search
 // ============================================================
-import { state, subscribe, isSignedIn, isAdmin, visibleCategories, visibleAnnouncements, myClass, classOf, categoryOf, canAnnounce } from "../store.js";
+import { state, subscribe, isSignedIn, isAdmin, visibleCategories, visibleAnnouncements, visibleTodos, myClass, classOf, categoryOf, canAnnounce, todosFor } from "../store.js";
 import { navigate } from "../router.js";
 import { esc, fmtDate, spinner } from "../ui.js";
 import { renderBlocks } from "../blocks.js";
@@ -69,6 +69,25 @@ function homeAnnouncementsHtml() {
     </div>`;
 }
 
+/** To-do items panel (live: refreshes when items change). */
+function homeTodosHtml() {
+  const todos = visibleTodos().slice(0, 6);
+  if (!todos.length) return "";
+  return `
+    <div class="panel">
+      <div class="panel-head"><h2>✅ To-do lists</h2></div>
+      <ul style="padding:0;margin:0;list-style:none">
+        ${todos.map((t) => `
+          <li style="display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)">
+            <input type="checkbox" ${t.done ? "checked" : ""} disabled style="margin:0" />
+            <span style="flex:1;min-width:0">${t.done ? `<span style="text-decoration:line-through;color:var(--muted)">${esc(t.title)}</span>` : `<b>${esc(t.title)}</b>`}</span>
+            ${t.classId ? `<span class="chip" style="font-size:.75rem">${esc(classOf(t.classId)?.name || "Class")}</span>` : ""}
+            ${t.dueAt ? `<span class="form-note" style="font-size:.8rem;margin-left:auto">${fmtDate(t.dueAt, { short: true, noTime: true })}</span>` : ""}
+          </li>`).join("")}
+      </ul>
+    </div>`;
+}
+
 function wireHomeAnnButton(root = document) {
   const btn = root.querySelector("#home-new-ann");
   if (btn) btn.onclick = async () => {
@@ -99,6 +118,8 @@ export async function homeView(container) {
 
     <div id="home-ann-wrap">${homeAnnouncementsHtml()}</div>
 
+    <div id="home-todo-wrap"></div>
+
     ${cls ? `
       <div class="panel">
         <div class="panel-head">
@@ -117,9 +138,11 @@ export async function homeView(container) {
         <div class="spacer"></div>
         <a class="btn btn-sm" href="#/browse">See all</a>
       </div>
-      ${cats.length
-        ? `<div class="grid cols-3">${cats.slice(0, 9).map(categoryCard).join("")}</div>`
-        : `<div class="empty"><span class="empty-ico">🗂️</span>No categories have been published yet.</div>`}
+      <div id="home-cats-wrap">
+        ${cats.length
+          ? `<div class="grid cols-3">${cats.slice(0, 9).map(categoryCard).join("")}</div>`
+          : `<div class="empty"><span class="empty-ico">🗂️</span>No categories have been published yet.</div>`}
+      </div>
     </div>
 
     <div class="panel">
@@ -141,8 +164,38 @@ export async function homeView(container) {
     }
   });
 
+  // ---- to-do items panel (live)
+  let lastTodoHtml = "";
+  const wrapTodo = container.querySelector("#home-todo-wrap");
+  const renderTodos = () => {
+    if (!wrapTodo || !document.contains(wrapTodo)) return;
+    const html = homeTodosHtml();
+    if (html !== lastTodoHtml) {
+      lastTodoHtml = html;
+      wrapTodo.innerHTML = html;
+    }
+  };
+  renderTodos();
+  const unsubTodo = subscribe(renderTodos);
+
+  // ---- categories panel (live)
+  let lastCatsHtml = "";
+  const wrapCats = container.querySelector("#home-cats-wrap");
+  const renderCats = () => {
+    if (!wrapCats || !document.contains(wrapCats)) return;
+    const cats = visibleCategories();
+    const html = cats.length
+      ? `<div class="grid cols-3">${cats.slice(0, 9).map(categoryCard).join("")}</div>`
+      : `<div class="empty"><span class="empty-ico">🗂️</span>No categories have been published yet.</div>`;
+    if (html !== lastCatsHtml) {
+      lastCatsHtml = html;
+      wrapCats.innerHTML = html;
+    }
+  };
+  const unsubCats = subscribe(renderCats);
+
   // ---- class pages (live)
-  let clean1 = () => {};
+  let clean1 = null;
   if (cls) {
     clean1 = watchPages(null, (pages, err) => {
       const host = document.getElementById("home-class-pages");
@@ -166,7 +219,7 @@ export async function homeView(container) {
       : `<div class="empty"><span class="empty-ico">📚</span>Nothing here yet — an admin can add pages from the admin panel.</div>`;
   });
 
-  return () => { clean1(); clean2(); unsubAnn(); };
+  return () => { clean1(); clean2(); unsubAnn(); unsubTodo(); unsubCats(); };
 }
 
 function categoryCard(c) {
@@ -276,6 +329,17 @@ export async function pageView(container, { id }) {
         <div class="panel" style="margin-top:24px">
           <div class="panel-head"><h3>📎 Attachments</h3></div>
           ${p.attachments.map((f) => `<p><a href="${esc(f.url)}" target="_blank" rel="noopener" download>${esc(f.name)}</a></p>`).join("")}
+        </div>` : ""}
+      ${todosFor("page", p.id).length ? `
+        <div class="panel" style="margin-top:24px">
+          <div class="panel-head"><h3>✅ To-do lists for this page</h3></div>
+          <ul style="padding:0;margin:0;list-style:none">
+            ${todosFor("page", p.id).map((t) => `
+              <li style="display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)">
+                <span style="flex:1;min-width:0">${t.done ? `<span style="text-decoration:line-through;color:var(--muted)">${esc(t.title)}</span>` : `<b>${esc(t.title)}</b>`}</span>
+                ${t.dueAt ? `<span class="form-note" style="font-size:.8rem">${fmtDate(t.dueAt, { short: true, noTime: true })}</span>` : ""}
+              </li>`).join("")}
+          </ul>
         </div>` : ""}`;
   }, (err) => {
     console.warn("page:", err.message);

@@ -10,6 +10,9 @@ import {
   doc, collection, onSnapshot, query, orderBy, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   serverTimestamp, where, addDoc, writeBatch, limit,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  ref as storageRef, uploadBytes, getDownloadURL,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 export const state = {
   user: null,          // Firebase auth user
@@ -20,6 +23,7 @@ export const state = {
   announcements: [],   // announcements collection (newest first)
   notifications: [],   // my notifications (newest first)
   unread: 0,           // how many notifications I have not opened yet
+  todos: [],           // to-do items (admin-managed)
   booting: true,
 };
 
@@ -65,6 +69,13 @@ export async function init() {
   // ---- live: announcements ----
   unsubs.push(onSnapshot(query(collection(db, "announcements"), orderBy("atMs", "desc")), (snap) => {
     state.announcements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    emit();
+  }, handleErr));
+
+  // ---- live: to-do items ----
+  unsubs.push(onSnapshot(query(collection(db, "todos"), orderBy("order", "asc")), (snap) => {
+    state.todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || String(a.title || "").localeCompare(String(b.title || "")));
     emit();
   }, handleErr));
 
@@ -244,20 +255,35 @@ export async function markAllNotificationsRead() {
 /**
  * Publish an announcement AND push a notification to every relevant device.
  * audience: null = everybody, otherwise only that class (+ admins).
+ * scheduledAt: if set, the announcement is saved as "scheduled" and published
+ * automatically when that time arrives (checked by runScheduler).
  */
-export async function createAnnouncement({ title, body = "", classId = null }) {
+export async function createAnnouncement({ title, body = "", classId = null, scheduledAt = null }) {
   if (!state.user) throw new Error("Sign in first.");
   if (!canAnnounce()) throw new Error("You do not have permission to publish announcements.");
   const now = Date.now();
   const authorName = state.profile?.displayName || "Announcement";
+  const scheduled = scheduledAt && scheduledAt > now;
+  const status = scheduled ? "scheduled" : "published";
+  const atMs = scheduled ? scheduledAt : now;
 
   const ref = await addDoc(collection(db, "announcements"), {
-    title, body, classId, atMs: now,
+    title, body, classId, atMs,
+    status,
+    scheduledAt: scheduled ? scheduledAt : null,
     authorUid: state.user.uid, authorName,
     updatedAt: serverTimestamp(),
   });
 
-  // ---- fan-out to every device ----
+  // ---- fan-out to every device (only if published now) ----
+  if (!scheduled) {
+    await fanoutAnnouncement(ref.id, { title, body, classId, atMs: now, authorName });
+  }
+  return ref.id;
+}
+
+/** Send notification copies of an announcement to every relevant user. */
+async function fanoutAnnouncement(annId, { title, body, classId, atMs, authorName }) {
   const all = await collect(query(collection(db, "users")));
   const targets = all.filter((u) =>
     u.id !== state.user.uid &&
@@ -266,14 +292,76 @@ export async function createAnnouncement({ title, body = "", classId = null }) {
   for (let i = 0; i < targets.length; i += 400) {
     const batch = writeBatch(db);
     targets.slice(i, i + 400).forEach((u) => {
-      batch.set(doc(db, "users", u.id, "notifications", ref.id), {
-        type: "announcement", title, body, annId: ref.id,
-        classId, authorName, atMs: now,
+      batch.set(doc(db, "users", u.id, "notifications", annId), {
+        type: "announcement", title, body, annId,
+        classId, authorName, atMs,
       });
     });
     await batch.commit().catch((e) => console.warn("notify:", e.message));
   }
-  return ref.id;
+}
+
+/** Publish a scheduled announcement and notify everyone. */
+export async function publishScheduledAnnouncement(id) {
+  const snap = await getDoc(doc(db, "announcements", id));
+  if (!snap.exists()) return;
+  const a = { id: snap.id, ...snap.data() };
+  if (a.status !== "scheduled") return;
+
+  const now = Date.now();
+  await updateDoc(doc(db, "announcements", id), {
+    status: "published",
+    atMs: now,
+    updatedAt: serverTimestamp(),
+  });
+  await fanoutAnnouncement(id, {
+    title: a.title, body: a.body, classId: a.classId, atMs: now,
+    authorName: a.authorName || "Announcement",
+  });
+}
+
+/** Background scheduler: checks every 60s for scheduled announcements that are due.
+ *  Call once after init() completes. */
+let schedulerTimer = null;
+export function runScheduler() {
+  if (schedulerTimer) return;
+  schedulerTimer = setInterval(async () => {
+    try {
+      const now = Date.now();
+      const q = query(
+        collection(db, "announcements"),
+        where("status", "==", "scheduled"),
+        where("scheduledAt", "<=", now)
+      );
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        await publishScheduledAnnouncement(d.id);
+      }
+    } catch (e) {
+      console.warn("scheduler:", e.message);
+    }
+  }, 60 * 1000);
+  // also run once immediately
+  (async () => {
+    try {
+      const now = Date.now();
+      const q = query(
+        collection(db, "announcements"),
+        where("status", "==", "scheduled"),
+        where("scheduledAt", "<=", now)
+      );
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        await publishScheduledAnnouncement(d.id);
+      }
+    } catch (e) {
+      console.warn("scheduler init:", e.message);
+    }
+  })();
+}
+
+export function stopScheduler() {
+  if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
 }
 
 /** Ask the browser for system-notification permission (used by My account). */
@@ -320,6 +408,21 @@ export async function seedStarter() {
     body: "This site is fully managed by your administrators — check back often for new pages, files and announcements.",
     classId: null, atMs: now, updatedAt: serverTimestamp(),
   });
+
+  // ---- starter to-do items ----
+  const todos = [
+    { title: "Publish welcome page", description: "Make sure the welcome page is live and linked from Home.", order: 1 },
+    { title: "Add class pages", description: "Create pages for each class so students have their own space.", order: 2, classId: null },
+    { title: "Send exam schedule", description: "Publish the exam timetable as an announcement.", order: 3 },
+    { title: "Update contact info", description: "Check the footer email, phone and address are correct.", order: 4, hidden: false },
+  ];
+  for (const t of todos) {
+    await addDoc(collection(db, "todos"), {
+      ...t, done: false,
+      authorUid: state.user?.uid, authorName: state.profile?.displayName || "Admin",
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+  }
 }
 
 export async function updateProfile(patch) {
@@ -379,6 +482,71 @@ export const classOf = (id) => state.classes.find((c) => c.id === id) || null;
 export const categoryOf = (id) => state.categories.find((c) => c.id === id) || null;
 
 export function myClass() { return state.profile?.classId ? classOf(state.profile.classId) : null; }
+
+// ============================================================
+// TO-DO LISTS
+// ============================================================
+
+/** To-do items the current visitor is allowed to see.
+ *  Admins see everything. Others see non-hidden items (and class-scoped items if they're in that class). */
+export function visibleTodos() {
+  const admin = isAdmin();
+  const cid = state.profile?.classId || null;
+  return state.todos
+    .filter((t) => (t.hidden ? admin : true))
+    .filter((t) => admin || !t.classId || t.classId === cid);
+}
+
+/** To-dos linked to a specific page or announcement. */
+export function todosFor(relatedType, relatedId) {
+  if (!relatedType || !relatedId) return [];
+  return state.todos.filter((t) => t.relatedType === relatedType && t.relatedId === relatedId);
+}
+
+/** Admin: create a to-do item. */
+export async function addTodo({ title, description = "", dueAt = null, classId = null, hidden = false, order = 0, relatedType = null, relatedId = null }) {
+  if (!state.user) throw new Error("Sign in first.");
+  if (!isAdmin()) throw new Error("Admins only.");
+  if (!title || !title.trim()) throw new Error("Please enter a title.");
+  const now = Date.now();
+  const ref = await addDoc(collection(db, "todos"), {
+    title: title.trim(),
+    description: description.trim(),
+    done: false,
+    dueAt: dueAt || null,
+    classId: classId || null,
+    relatedType: relatedType || null,
+    relatedId: relatedId || null,
+    hidden: hidden === true,
+    order: order || 0,
+    authorUid: state.user.uid,
+    authorName: state.profile?.displayName || state.user?.email || "Admin",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+/** Admin: update a to-do item. */
+export async function updateTodo(id, patch) {
+  if (!isAdmin()) throw new Error("Admins only.");
+  await updateDoc(doc(db, "todos", id), { ...patch, updatedAt: serverTimestamp() });
+}
+
+/** Admin: delete a to-do item. */
+export async function deleteTodo(id) {
+  if (!isAdmin()) throw new Error("Admins only.");
+  await deleteDoc(doc(db, "todos", id));
+}
+
+/** Toggle done status (admin or the item's author). */
+export async function toggleTodo(id, done) {
+  if (!state.user) throw new Error("Sign in first.");
+  const todo = state.todos.find((t) => t.id === id);
+  if (!todo) throw new Error("To-do not found.");
+  if (!isAdmin() && todo.authorUid !== state.user.uid) throw new Error("Not your to-do.");
+  await updateDoc(doc(db, "todos", id), { done: done === true, updatedAt: serverTimestamp() });
+}
 
 /** Categories the current visitor is allowed to see. */
 export function visibleCategories() {
@@ -477,23 +645,94 @@ function renderQuickTheme() {
 // ============================================================
 // STORAGE UPLOADS
 // ============================================================
-export async function uploadFile(file, folder = "uploads") {
-  const { ref, uploadBytes, getDownloadURL } = await import(
-    "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js"
-  );
-  const { storage } = await import("./firebase.js");
-  const safe = (file.name || "file").replace(/[^\w.\-]+/g, "_");
-  const path = `${folder}/${Date.now()}_${safe}`;
-  const r = ref(storage, path);
-  try {
-    await uploadBytes(r, file, { contentType: file.type });
-  } catch (e) {
-    throw new Error(humanUploadError(e));
+// Images are compressed in the browser and stored INLINE in Firestore as a
+// data: URL. This needs no Firebase Storage bucket, so uploads work even on a
+// project where Storage was never enabled. Files are kept small so a page
+// document stays well under Firestore's 1 MB per-document limit.
+const INLINE_MAX_DIM = 1400;   // longest edge, px
+const INLINE_ALPHA_MAX = 300000; // keep a transparent PNG only if small enough
+const INLINE_RAW_MAX = 500 * 1024; // hard cap for non-image files
+
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(new Error("Could not read that file."));
+    fr.readAsDataURL(file);
+  });
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Could not process that image."));
+    img.src = src;
+  });
+}
+
+async function compressImage(file) {
+  const dataUrl = await readAsDataURL(file);
+  let img;
+  try { img = await loadImage(dataUrl); } catch { return dataUrl; } // e.g. SVG — keep as-is
+  const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
+  if (!w0 || !h0) return dataUrl;
+
+  const scale = Math.min(1, INLINE_MAX_DIM / Math.max(w0, h0));
+  const cw = Math.max(1, Math.round(w0 * scale));
+  const ch = Math.max(1, Math.round(h0 * scale));
+
+  const draw = (alpha, type, quality) => {
+    const c = document.createElement("canvas");
+    c.width = cw; c.height = ch;
+    const x = c.getContext("2d");
+    if (!alpha) { x.fillStyle = "#fff"; x.fillRect(0, 0, cw, ch); }
+    x.drawImage(img, 0, 0, cw, ch);
+    return c.toDataURL(type, quality);
+  };
+
+  const keepAlpha = ["image/png", "image/webp", "image/gif"].includes(file.type);
+  if (keepAlpha) {
+    const png = draw(true, "image/png");
+    if (png.length <= INLINE_ALPHA_MAX) return png;
   }
+  return draw(false, "image/jpeg", 0.8);
+}
+
+/** Upload a file to Firebase Storage and return its public download URL. */
+export async function uploadToStorage(file, folder = "uploads") {
+  if (!file) throw new Error("No file selected.");
+  const path = `${folder}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  const snap = await uploadBytes(storageRef(storage, path), file);
+  const url = await getDownloadURL(snap.ref);
+  return { url, name: file.name, type: file.type, size: file.size, path };
+}
+
+/** Upload a file: images go to Firebase Storage (public URL), other files too.
+ *  Falls back to inline base64 only if Storage is unavailable. */
+export async function uploadFile(file, folder = "uploads") {
   try {
-    return { url: await getDownloadURL(r), name: file.name, size: file.size, type: file.type, path };
+    return await uploadToStorage(file, folder);
   } catch (e) {
-    throw new Error(humanUploadError(e));
+    // Fallback: small images/files stored inline as data: URL (no Storage bucket needed)
+    if (file.type && file.type.startsWith("image/")) {
+      let url;
+      try { url = await compressImage(file); }
+      catch (err) { throw new Error(err.message || "Could not process that image."); }
+      return {
+        url, name: file.name, type: file.type,
+        size: Math.round((url.length - (url.indexOf(",") + 1)) * 0.75),
+        path: `${folder}/inline`,
+      };
+    }
+    if (file.size > INLINE_RAW_MAX) {
+      throw new Error(
+        "That file is too large to store inline (limit 500 KB). " +
+        "Use a smaller file, or Firebase Storage must be enabled."
+      );
+    }
+    const url = await readAsDataURL(file);
+    return { url, name: file.name, size: file.size, type: file.type, path: `${folder}/inline` };
   }
 }
 
