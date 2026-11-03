@@ -153,15 +153,16 @@ export async function authView(container, params, qs) {
         });
       });
       if (!confirmed) return;
-      submit.disabled = true;
+      guestBtn.disabled = true;
       guestBtn.textContent = "Signing in as guest…";
       try {
         await signInGuest();
         toast("Signed in as guest.", "ok");
         navigate("/");
       } catch (err) {
-        toast(friendlyAuthError(err), "error", "Guest sign in failed");
-        submit.disabled = false;
+        console.error("Guest sign-in error:", err);
+        toast(err.message || "Guest sign-in failed. Make sure Anonymous Authentication is enabled in Firebase Console.", "error", "Guest sign in failed");
+        guestBtn.disabled = false;
         guestBtn.textContent = "👤 Sign in as guest";
       }
     });
