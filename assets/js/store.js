@@ -23,7 +23,8 @@ export const state = {
   announcements: [],   // announcements collection (newest first)
   notifications: [],   // my notifications (newest first)
   unread: 0,           // how many notifications I have not opened yet
-  todos: [],           // to-do items (admin-managed)
+  personalTodos: [],   // my personal to-do items (users/{uid}/todos)
+  globalTodos: [],     // admin-created global to-dos (todos collection)
   booting: true,
 };
 
@@ -72,9 +73,9 @@ export async function init() {
     emit();
   }, handleErr));
 
-  // ---- live: to-do items ----
+  // ---- live: global to-do items (admin-created, visible to all or admins) ----
   unsubs.push(onSnapshot(query(collection(db, "todos"), orderBy("order", "asc")), (snap) => {
-    state.todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+    state.globalTodos = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || String(a.title || "").localeCompare(String(b.title || "")));
     emit();
   }, handleErr));
@@ -90,13 +91,16 @@ export async function init() {
         } catch (e) { console.warn("profile:", e.message); }
         try { watchProfile(user.uid); } catch (e) { console.warn("profile watch:", e.message); }
         try { watchNotifications(user.uid); } catch (e) { console.warn("notifications watch:", e.message); }
+        try { watchPersonalTodos(user.uid); } catch (e) { console.warn("personal todos watch:", e.message); }
         if (isAdmin()) { try { await maybeCreateSettings(); } catch (e) { console.warn(e.message); } }
       } else {
         stopProfileWatch();
         stopNotificationsWatch();
+        stopPersonalTodosWatch();
         state.profile = null;
         state.notifications = [];
         state.unread = 0;
+        state.personalTodos = [];
         profileLoaded = false;
         applyTheme(getLocalTheme());
       }
@@ -167,6 +171,7 @@ export async function maybeCreateSettings() {
 import { toast } from "./ui.js";
 
 let unsubNotes = null;
+let unsubPersonalTodos = null;
 let seenNoteIds = null; // null until the first snapshot (baseline, no spam on login)
 
 function watchNotifications(uid) {
@@ -194,6 +199,23 @@ function watchNotifications(uid) {
 function stopNotificationsWatch() {
   if (unsubNotes) { unsubNotes(); unsubNotes = null; }
   seenNoteIds = null;
+}
+
+function watchPersonalTodos(uid) {
+  stopPersonalTodosWatch();
+  unsubPersonalTodos = onSnapshot(
+    query(collection(db, "users", uid, "todos"), orderBy("order", "asc")),
+    (snap) => {
+      state.personalTodos = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || String(a.title || "").localeCompare(String(b.title || "")));
+      emit();
+    },
+    (e) => console.warn("personal todos:", e.message)
+  );
+}
+
+function stopPersonalTodosWatch() {
+  if (unsubPersonalTodos) { unsubPersonalTodos(); unsubPersonalTodos = null; }
 }
 
 /** Fire the on-device alert: in-app toast + system notification + sound. */
@@ -408,21 +430,6 @@ export async function seedStarter() {
     body: "This site is fully managed by your administrators — check back often for new pages, files and announcements.",
     classId: null, atMs: now, updatedAt: serverTimestamp(),
   });
-
-  // ---- starter to-do items ----
-  const todos = [
-    { title: "Publish welcome page", description: "Make sure the welcome page is live and linked from Home.", order: 1 },
-    { title: "Add class pages", description: "Create pages for each class so students have their own space.", order: 2, classId: null },
-    { title: "Send exam schedule", description: "Publish the exam timetable as an announcement.", order: 3 },
-    { title: "Update contact info", description: "Check the footer email, phone and address are correct.", order: 4, hidden: false },
-  ];
-  for (const t of todos) {
-    await addDoc(collection(db, "todos"), {
-      ...t, done: false,
-      authorUid: state.user?.uid, authorName: state.profile?.displayName || "Admin",
-      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-    });
-  }
 }
 
 export async function updateProfile(patch) {
@@ -487,24 +494,34 @@ export function myClass() { return state.profile?.classId ? classOf(state.profil
 // TO-DO LISTS
 // ============================================================
 
-/** To-do items the current visitor is allowed to see.
- *  Admins see everything. Others see non-hidden items (and class-scoped items if they're in that class). */
+/** All to-dos visible to the current user:
+ *  - Their personal to-dos (users/{uid}/todos)
+ *  - Admin global to-dos where targetType === "all" (everyone)
+ *  - Admin global to-dos where targetType === "admin" (admins only) */
 export function visibleTodos() {
   const admin = isAdmin();
   const cid = state.profile?.classId || null;
-  return state.todos
+  const global = state.globalTodos
     .filter((t) => (t.hidden ? admin : true))
-    .filter((t) => admin || !t.classId || t.classId === cid);
+    .filter((t) => admin || !t.classId || t.classId === cid)
+    .filter((t) => admin || t.targetType === "all" || !t.targetType)
+    .map((t) => ({ ...t, source: "global" }));
+  const personal = state.personalTodos
+    .filter((t) => (t.hidden ? admin : true))
+    .filter((t) => admin || !t.classId || t.classId === cid)
+    .map((t) => ({ ...t, source: "personal" }));
+  return [...personal, ...global]
+    .sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || String(a.title || "").localeCompare(String(b.title || "")));
 }
 
-/** To-dos linked to a specific page or announcement. */
+/** To-dos linked to a specific page or announcement (global to-dos only, personal ones are private). */
 export function todosFor(relatedType, relatedId) {
   if (!relatedType || !relatedId) return [];
-  return state.todos.filter((t) => t.relatedType === relatedType && t.relatedId === relatedId);
+  return state.globalTodos.filter((t) => t.relatedType === relatedType && t.relatedId === relatedId);
 }
 
-/** Admin: create a to-do item. */
-export async function addTodo({ title, description = "", dueAt = null, classId = null, hidden = false, order = 0, relatedType = null, relatedId = null }) {
+/** Admin: create a global to-do item visible to all users or admins only. */
+export async function addTodo({ title, description = "", dueAt = null, classId = null, hidden = false, order = 0, relatedType = null, relatedId = null, targetType = "all" }) {
   if (!state.user) throw new Error("Sign in first.");
   if (!isAdmin()) throw new Error("Admins only.");
   if (!title || !title.trim()) throw new Error("Please enter a title.");
@@ -519,6 +536,7 @@ export async function addTodo({ title, description = "", dueAt = null, classId =
     relatedId: relatedId || null,
     hidden: hidden === true,
     order: order || 0,
+    targetType: targetType || "all",
     authorUid: state.user.uid,
     authorName: state.profile?.displayName || state.user?.email || "Admin",
     createdAt: serverTimestamp(),
@@ -527,25 +545,62 @@ export async function addTodo({ title, description = "", dueAt = null, classId =
   return ref.id;
 }
 
-/** Admin: update a to-do item. */
+/** Admin: update a global to-do item. */
 export async function updateTodo(id, patch) {
   if (!isAdmin()) throw new Error("Admins only.");
   await updateDoc(doc(db, "todos", id), { ...patch, updatedAt: serverTimestamp() });
 }
 
-/** Admin: delete a to-do item. */
+/** Admin: delete a global to-do item. */
 export async function deleteTodo(id) {
   if (!isAdmin()) throw new Error("Admins only.");
   await deleteDoc(doc(db, "todos", id));
 }
 
-/** Toggle done status (admin or the item's author). */
+/** Toggle done status on a global to-do (admin or the item's author). */
 export async function toggleTodo(id, done) {
   if (!state.user) throw new Error("Sign in first.");
-  const todo = state.todos.find((t) => t.id === id);
+  const todo = [...state.globalTodos].find((t) => t.id === id);
   if (!todo) throw new Error("To-do not found.");
   if (!isAdmin() && todo.authorUid !== state.user.uid) throw new Error("Not your to-do.");
   await updateDoc(doc(db, "todos", id), { done: done === true, updatedAt: serverTimestamp() });
+}
+
+/** User: create a personal to-do item (stored in users/{uid}/todos). */
+export async function addPersonalTodo({ title, description = "", dueAt = null, classId = null, order = 0 }) {
+  if (!state.user) throw new Error("Sign in first.");
+  if (!title || !title.trim()) throw new Error("Please enter a title.");
+  const ref = await addDoc(collection(db, "users", state.user.uid, "todos"), {
+    title: title.trim(),
+    description: description.trim(),
+    done: false,
+    dueAt: dueAt || null,
+    classId: classId || null,
+    order: order || 0,
+    authorUid: state.user.uid,
+    authorName: state.profile?.displayName || state.user?.email || "Me",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+/** User: update a personal to-do item. */
+export async function updatePersonalTodo(id, patch) {
+  if (!state.user) throw new Error("Sign in first.");
+  await updateDoc(doc(db, "users", state.user.uid, "todos", id), { ...patch, updatedAt: serverTimestamp() });
+}
+
+/** User: delete a personal to-do item. */
+export async function deletePersonalTodo(id) {
+  if (!state.user) throw new Error("Sign in first.");
+  await deleteDoc(doc(db, "users", state.user.uid, "todos", id));
+}
+
+/** User: toggle done status on a personal to-do. */
+export async function togglePersonalTodo(id, done) {
+  if (!state.user) throw new Error("Sign in first.");
+  await updateDoc(doc(db, "users", state.user.uid, "todos", id), { done: done === true, updatedAt: serverTimestamp() });
 }
 
 /** Categories the current visitor is allowed to see. */

@@ -599,7 +599,7 @@ async function tabTodos(host) {
 
   async function render() {
     const el = host.querySelector("#todo-list");
-    const todos = visibleTodos();
+    const todos = state.globalTodos;
     const admin = isAdmin();
     el.innerHTML = todos.length ? `
       <div class="table-wrap"><table class="list">
@@ -625,16 +625,16 @@ async function tabTodos(host) {
           </tr>`).join("")}</tbody>
       </table></div>` : `<div class="empty"><span class="empty-ico">✅</span>No to-do items yet. Add your first one — e.g. “Publish exam schedule”.</div>`;
 
-    el.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => todoModal(state.todos.find((t) => t.id === b.dataset.edit), render)));
+    el.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => todoModal(state.globalTodos.find((t) => t.id === b.dataset.edit), render)));
     el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
-      if (await confirmBox(`Delete the to-do “${state.todos.find((t) => t.id === b.dataset.del)?.title}"?`)) {
+      if (await confirmBox(`Delete the to-do “${state.globalTodos.find((t) => t.id === b.dataset.del)?.title}"?`)) {
         await deleteTodo(b.dataset.del).catch((e) => toast(e.message, "error"));
         toast("To-do deleted.", "ok");
       }
     }));
     el.querySelectorAll("[data-toggle]").forEach((b) => {
       b.onclick = async () => {
-        const todo = state.todos.find((t) => t.id === b.dataset.toggle);
+        const todo = state.globalTodos.find((t) => t.id === b.dataset.toggle);
         if (!todo) return;
         try { await toggleTodo(b.dataset.toggle, !todo.done); toast(todo.done ? "Reopened to-do." : "To-do completed.", "ok"); }
         catch (e) { toast(e.message, "error"); b.checked = todo.done; }
@@ -645,7 +645,7 @@ async function tabTodos(host) {
 
 function todoModal(todo, onDone) {
   const isNew = !todo;
-  const t = todo || { title: "", description: "", dueAt: "", classId: "", hidden: false, order: state.todos.length + 1, relatedType: null, relatedId: null };
+  const t = todo || { title: "", description: "", dueAt: "", classId: "", hidden: false, order: state.globalTodos.length + 1, relatedType: null, relatedId: null, targetType: "all" };
   openModal({
     title: isNew ? "➕ Add to-do" : "✏️ Edit to-do",
     body: `
@@ -660,6 +660,11 @@ function todoModal(todo, onDone) {
             ${state.classes.map((k) => `<option value="${esc(k.id)}" ${t.classId === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}
           </select></div>
       </div>
+      <div class="field"><label>Show to <span class="hint">(who can see this to-do)</span></label>
+        <select class="input" name="targetType">
+          <option value="all" ${t.targetType === "all" || !t.targetType ? "selected" : ""}>All users</option>
+          <option value="admin" ${t.targetType === "admin" ? "selected" : ""}>Admins only</option>
+        </select></div>
       <div class="field"><label>Link to <span class="hint">(optional — attach this to-do to a page or announcement)</span></label>
         <select class="input" name="relatedType">
           <option value="">None</option>
@@ -682,6 +687,7 @@ function todoModal(todo, onDone) {
           description: m.querySelector('[name="description"]').value.trim(),
           dueAt,
           classId: m.querySelector('[name="classId"]').value || null,
+          targetType: m.querySelector('[name="targetType"]').value || "all",
           relatedType: m.querySelector('[name="relatedType"]').value || null,
           relatedId: m.querySelector('[name="relatedId"]').value.trim() || null,
           hidden: m.querySelector('[name="hidden"]').checked,

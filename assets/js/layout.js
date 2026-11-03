@@ -4,6 +4,7 @@
 import {
   state, subscribe, isAdmin, isSignedIn, signOutUser, visibleCategories, visibleTodos, myClass, classOf, updateProfile,
   canAnnounce, createAnnouncement, markNotificationRead, markAllNotificationsRead,
+  addPersonalTodo, updatePersonalTodo, deletePersonalTodo, togglePersonalTodo,
 } from "./store.js";
 import { navigate, currentPath } from "./router.js";
 import { esc, initials, openModal, closeModal, toast, fmtDate } from "./ui.js";
@@ -245,16 +246,66 @@ function renderSidebar() {
       <div class="side-title">✅ To-do lists</div>
       ${isSignedIn()
         ? `
-          ${visibleTodos().length
-            ? visibleTodos().map((t) => `
-              <a class="side-link ${path === "/admin/todos" ? "active" : ""}" href="#/admin/todos" title="${esc(t.description || t.name || t.title)}">
-                <span class="ico">${t.done ? "✅" : "⬜"}</span> ${esc(t.title)}
-                ${t.dueAt ? `<span class="side-badge">${fmtDate(t.dueAt, { short: true, noTime: true })}</span>` : ""}
-              </a>`).join("")
-            : `<div style="padding:6px 12px;color:var(--muted);font-size:.88rem">No to-do items yet.</div>`}
-          ${admin ? `<div style="padding:6px 12px"><a class="btn btn-sm btn-primary" href="#/admin/todos" style="width:100%;text-align:center">Manage to-dos</a></div>` : ""}`
+          <div style="padding:6px 12px">
+            ${visibleTodos().length
+              ? `<ul style="padding:0;margin:0;list-style:none">
+                 ${visibleTodos().map((t) => `
+                   <li style="display:flex;gap:8px;align-items:center;padding:8px 4px;border-bottom:1px solid var(--line);font-size:.9rem">
+                     <input type="checkbox" data-pt-toggle="${esc(t.id)}" ${t.done ? "checked" : ""} style="margin:0" />
+                     <span style="flex:1;min-width:0;${t.done ? "text-decoration:line-through;color:var(--muted)" : ""}">${esc(t.title)}</span>
+                     ${t.source === "personal" ? `
+                       <button class="btn btn-sm btn-danger" data-pt-del="${esc(t.id)}" style="padding:2px 6px;font-size:.75rem">✕</button>
+                     ` : ""}
+                     ${t.source === "global" && t.targetType === "admin" ? `<span class="side-badge" style="font-size:.65rem">Admin</span>` : ""}
+                     ${t.dueAt ? `<span class="side-badge" style="font-size:.75rem">${fmtDate(t.dueAt, { short: true, noTime: true })}</span>` : ""}
+                   </li>`).join("")}
+               </ul>` : `<div style="padding:6px 12px;color:var(--muted);font-size:.88rem">No to-do items yet.</div>`}
+            ${admin ? `<div style="margin-top:8px"><a class="btn btn-sm btn-primary" href="#/admin/todos" style="width:100%;text-align:center">Manage global to-dos</a></div>` : ""}
+            <div style="margin-top:8px">
+              <input class="input" id="pt-new-title" placeholder="New to-do…" style="width:70%;padding:6px 8px;font-size:.85rem" />
+              <button class="btn btn-sm btn-primary" id="pt-add" style="width:28%;padding:6px 4px;font-size:.85rem">Add</button>
+            </div>
+          </div>`
         : `<div style="padding:6px 12px;color:var(--muted);font-size:.88rem">Sign in to see to-do lists.</div>`}
     </div>`;
+
+  // ---- wire up personal to-do interactions ----
+  wireSidebarTodos();
+}
+
+function wireSidebarTodos() {
+  // toggle checkboxes
+  document.querySelectorAll('[data-pt-toggle]').forEach((cb) => {
+    cb.onclick = async () => {
+      try { await togglePersonalTodo(cb.dataset.ptToggle, cb.checked); }
+      catch (e) { cb.checked = !cb.checked; toast(e.message, "error"); }
+    };
+  });
+  // delete buttons
+  document.querySelectorAll('[data-pt-del]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      if (confirm("Delete this to-do?")) {
+        try { await deletePersonalTodo(btn.dataset.ptDel); toast("To-do deleted.", "ok"); }
+        catch (e) { toast(e.message, "error"); }
+      }
+    };
+  });
+  // add button
+  const addBtn = document.getElementById("pt-add");
+  const titleInput = document.getElementById("pt-new-title");
+  if (addBtn && titleInput) {
+    addBtn.onclick = async () => {
+      const title = titleInput.value.trim();
+      if (!title) return;
+      try {
+        await addPersonalTodo({ title });
+        titleInput.value = "";
+        toast("To-do added.", "ok");
+      } catch (e) { toast(e.message, "error"); }
+    };
+    titleInput.onkeydown = (e) => { if (e.key === "Enter") addBtn.onclick(); };
+  }
 }
 
 // ---------------------------------------------------------------- announce

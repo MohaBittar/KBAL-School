@@ -72,6 +72,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ---- per-user to-do lists: owner manages their own ----
+    match /users/{userId}/todos/{todoId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create: if signedIn() && request.auth.uid == userId;
+      allow update, delete: if signedIn() && request.auth.uid == userId;
+    }
+
     // ---- per-user notifications (fan-out when an announcement is posted) ----
     match /users/{userId}/notifications/{noteId} {
       allow read: if signedIn() && request.auth.uid == userId;
