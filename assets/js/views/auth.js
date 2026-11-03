@@ -57,7 +57,10 @@ export async function authView(container, params, qs) {
         </form>
 
         <div class="auth-divider"><span>Or continue with</span></div>
-        <button class="btn btn-outline btn-block" id="auth-google" style="margin-top:8px">🔍 Sign in with Google</button>
+        <button class="btn btn-outline btn-block" id="auth-google" style="margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Google_2015_logo.svg/24px-Google_2015_logo.svg.png" alt="Google" width="20" height="20" />
+          Sign in with Google
+        </button>
         ${mode === "signin" ? `
         <button class="btn btn-ghost btn-block" id="auth-guest" style="margin-top:8px">👤 Sign in as guest</button>
         <div class="form-note" style="margin-top:8px;font-size:.85rem;color:var(--muted)">Guest accounts are temporary — changes are not saved and the account is deleted after 30 days.</div>` : ""}
