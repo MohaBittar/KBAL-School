@@ -102,7 +102,9 @@ service cloud.firestore {
         && request.auth.uid == userId
         && (isAdmin()
             || (request.resource.data.role == 'student'
-                && request.resource.data.get('canAnnounce', false) == false));   // students cannot grant themselves announce rights
+                && request.resource.data.get('canAnnounce', false) == false)
+            || (request.resource.data.role == 'guest'
+                && request.resource.data.isAnonymous == true));
       allow update: if isAdmin()
         || (signedIn()
             && request.auth.uid == userId

@@ -1,7 +1,7 @@
 // ============================================================
 // KBAL-School — central store: auth, Firestore data & theming
 // ============================================================
-import { auth, db, ADMIN_EMAILS } from "./firebase.js";
+import { auth, db, ADMIN_EMAILS, signInWithGoogle, signInAsGuest } from "./firebase.js";
 import {
   onAuthStateChanged, updateProfile as fbUpdateProfile, sendPasswordResetEmail,
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, reauthenticateWithCredential, EmailAuthProvider, updatePassword,
@@ -143,13 +143,15 @@ async function ensureProfile(user) {
   const ref = doc(db, "users", user.uid);
   const snap = await getDoc(ref);
   if (snap.exists()) return;
-  const isAdminEmail = ADMIN_EMAILS.includes((user.email || "").toLowerCase());
+  const isAnonymous = user.isAnonymous === true;
+  const isAdminEmail = !isAnonymous && ADMIN_EMAILS.includes((user.email || "").toLowerCase());
   await setDoc(ref, {
-    displayName: user.displayName || (user.email || "Student").split("@")[0],
-    email: (user.email || "").toLowerCase(),
-    role: isAdminEmail ? "admin" : "student",
+    displayName: isAnonymous ? "Guest" : (user.displayName || (user.email || "Student").split("@")[0]),
+    email: isAnonymous ? null : (user.email || "").toLowerCase(),
+    role: isAdminEmail ? "admin" : (isAnonymous ? "guest" : "student"),
     classId: null,
     theme: getLocalTheme(),
+    isAnonymous: isAnonymous || false,
     createdAt: Date.now(),
     lastSeen: Date.now(),
   }).catch((e) => console.warn("profile create:", e.message));
@@ -462,6 +464,18 @@ export async function signUp({ displayName, email, password, classId = null }) {
 
 export async function signOutUser() { await signOut(auth); }
 
+/** Sign in with Google (popup). */
+export async function signInGoogle() {
+  const user = await signInWithGoogle();
+  return user;
+}
+
+/** Sign in as an anonymous / guest user. */
+export async function signInGuest() {
+  const user = await signInAsGuest();
+  return user;
+}
+
 export async function sendReset(email) { await sendPasswordResetEmail(auth, email.trim()); }
 
 export async function changePassword(newPassword, currentPassword) {
@@ -481,6 +495,7 @@ export async function changePassword(newPassword, currentPassword) {
 export function isAdmin() {
   if (!state.user) return false;
   if ((state.profile?.role || "") === "admin") return true;
+  if ((state.profile?.role || "") === "guest") return false;
   return ADMIN_EMAILS.includes((state.user.email || "").toLowerCase());
 }
 export function isSignedIn() { return !!state.user; }

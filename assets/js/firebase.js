@@ -2,7 +2,7 @@
 // Firebase init — KBAL-School
 // ============================================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getStorage } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
@@ -38,4 +38,16 @@ export async function initAnalytics() {
   } catch (e) {
     /* analytics unavailable — ignore */
   }
+}
+
+/** Sign in with Google (popup). */
+export async function signInWithGoogle() {
+  const result = await signInWithPopup(auth, googleProvider);
+  return result.user;
+}
+
+/** Sign in as an anonymous / guest user. */
+export async function signInAsGuest() {
+  const result = await signInAnonymously(auth);
+  return result.user;
 }

@@ -1,9 +1,9 @@
 // ============================================================
 // Auth views: sign in / create account
 // ============================================================
-import { signIn, signUp, sendReset, state, isAdmin } from "../store.js";
+import { signIn, signUp, signInGoogle, signInGuest, sendReset, state, isAdmin } from "../store.js";
 import { navigate } from "../router.js";
-import { esc, toast } from "../ui.js";
+import { esc, toast, openModal } from "../ui.js";
 
 export async function authView(container, params, qs) {
   const mode = params.mode === "signup" ? "signup" : "signin";
@@ -56,6 +56,12 @@ export async function authView(container, params, qs) {
           </button>
         </form>
 
+        <div class="auth-divider"><span>Or continue with</span></div>
+        <button class="btn btn-outline btn-block" id="auth-google" style="margin-top:8px">🔍 Sign in with Google</button>
+        ${mode === "signin" ? `
+        <button class="btn btn-ghost btn-block" id="auth-guest" style="margin-top:8px">👤 Sign in as guest</button>
+        <div class="form-note" style="margin-top:8px;font-size:.85rem;color:var(--muted)">Guest accounts are temporary — changes are not saved and the account is deleted after 30 days.</div>` : ""}
+
         ${mode === "signin" ? `
           <div style="text-align:center;margin-top:14px">
             <a href="#" id="forgot" class="form-note">Forgot your password?</a>
@@ -99,6 +105,64 @@ export async function authView(container, params, qs) {
       submit.textContent = mode === "signup" ? "Create account" : "Sign in";
     }
   });
+
+  // ---- Google sign in ----
+  const googleBtn = container.querySelector("#auth-google");
+  if (googleBtn) {
+    googleBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      submit.disabled = true;
+      googleBtn.textContent = "Signing in with Google…";
+      try {
+        await signInGoogle();
+        toast("Signed in with Google!", "ok");
+        navigate("/");
+      } catch (err) {
+        toast(friendlyAuthError(err), "error", "Google sign in failed");
+        submit.disabled = false;
+        googleBtn.textContent = "🔍 Sign in with Google";
+      }
+    });
+  }
+
+  // ---- Guest sign in ----
+  const guestBtn = container.querySelector("#auth-guest");
+  if (guestBtn) {
+    guestBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const confirmed = await new Promise((resolve) => {
+        openModal({
+          title: "👤 Sign in as guest",
+          body: `
+            <p><b>Your changes will not be saved.</b></p>
+            <p>Guest accounts are temporary:</p>
+            <ul style="padding-left:20px;margin:10px 0">
+              <li>Pages, to-dos, and uploads you create will <b>not</b> be saved permanently.</li>
+              <li>Your guest account will be <b>deleted after 30 days</b>.</li>
+              <li>You cannot create announcements or manage content.</li>
+            </ul>
+            <p class="form-note">To save your work, please create a regular account instead.</p>`,
+          footer: `<button class="btn" data-x="cancel">Cancel</button><button class="btn btn-primary" data-x="ok">Continue as guest</button>`,
+          onMount(m) {
+            m.querySelector('[data-x="cancel"]').onclick = () => { closeModal(); resolve(false); };
+            m.querySelector('[data-x="ok"]').onclick = () => { closeModal(); resolve(true); };
+          },
+        });
+      });
+      if (!confirmed) return;
+      submit.disabled = true;
+      guestBtn.textContent = "Signing in as guest…";
+      try {
+        await signInGuest();
+        toast("Signed in as guest.", "ok");
+        navigate("/");
+      } catch (err) {
+        toast(friendlyAuthError(err), "error", "Guest sign in failed");
+        submit.disabled = false;
+        guestBtn.textContent = "👤 Sign in as guest";
+      }
+    });
+  }
 
   container.querySelector("#forgot")?.addEventListener("click", async (e) => {
     e.preventDefault();
